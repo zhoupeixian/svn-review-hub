@@ -42,7 +42,7 @@ type RuntimeEnv = {
   REVIEW_SYNC_KEY?: string;
 };
 
-let schemaReady = new WeakMap<D1Database, Promise<void>>();
+const schemaReady = new WeakMap<D1Database, Promise<void>>();
 
 function getRuntime(): RuntimeEnv {
   const runtime = env as unknown as RuntimeEnv;
