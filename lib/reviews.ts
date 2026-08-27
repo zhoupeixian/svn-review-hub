@@ -84,6 +84,32 @@ export type ReviewDetail = ReviewSummary & {
 export type IssueEvent = { id: number; issueId: number; fromStatus: IssueStatus | null; toStatus: IssueStatus; note: string; createdAt: string };
 export type CurrentReviewStats = { reviewCount: number; openIssueCount: number; pendingReviewCount: number; highRiskCount: number };
 
+export type SyncHealth = {
+  latestAutomationSyncAt: string | null;
+  latestLogDate: string | null;
+  latestRevision: number | null;
+  reviewCount: number;
+  currentIssueCount: number;
+  pendingIssueCount: number;
+  parseFailure: boolean;
+  zeroIssueWarning: boolean;
+};
+
+export type ReviewExportRow = {
+  issueKey: string;
+  status: string;
+  statusNote: string;
+  updatedAt: string;
+  severity: string;
+  title: string;
+  revision: string;
+  author: string;
+  logDate: string;
+  detailUrl: string;
+};
+
+const EXPORT_MAX_ROWS = 1000;
+
 export type ReviewIngestionResult = ReviewSummary & {
   ingestion: {
     createdIssueCount: number;
@@ -482,6 +508,171 @@ export async function getCurrentReviewStats(): Promise<CurrentReviewStats> {
       COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'pending_review' THEN i.id END) AS pendingReviewCount,
       COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status IN ('open', 'pending_review') AND i.severity IN ('P1', 'P2') THEN i.id END) AS highRiskCount
      FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id WHERE l.archived_at IS NULL`)) ?? { reviewCount: 0, openIssueCount: 0, pendingReviewCount: 0, highRiskCount: 0 };
+}
+
+export async function getSyncHealth(): Promise<SyncHealth> {
+  const latest = await first<{
+    updatedAt: string;
+    logDate: string;
+    revisionCount: number;
+    reviewedCount: number;
+    skippedCount: number;
+    p1Count: number;
+    p2Count: number;
+    p3Count: number;
+  }>([
+    'SELECT updated_at AS updatedAt, log_date AS logDate,',
+    'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
+    'skipped_count AS skippedCount, p1_count AS p1Count,',
+    'p2_count AS p2Count, p3_count AS p3Count',
+    'FROM review_logs WHERE sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
+  ].join(' '), ['automation']);
+  const latestRevision = await first<{ revision: number }>(
+    'SELECT MAX(r.revision) AS revision FROM review_revisions r JOIN review_logs l ON l.id = r.review_id',
+  );
+  const stats = await getCurrentReviewStats();
+  const reviewCount = await first<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM review_logs WHERE archived_at IS NULL',
+  );
+  const currentIssueCount = await first<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM review_issues i
+     JOIN review_logs l ON l.id = i.review_id
+     WHERE l.archived_at IS NULL AND i.source_current = 1`,
+  );
+
+  return {
+    latestAutomationSyncAt: latest?.updatedAt ?? null,
+    latestLogDate: latest?.logDate ?? null,
+    latestRevision: latestRevision?.revision ?? null,
+    reviewCount: reviewCount?.count ?? stats.reviewCount,
+    currentIssueCount: currentIssueCount?.count ?? 0,
+    pendingIssueCount: stats.pendingReviewCount,
+    parseFailure: Boolean(
+      latest && latest.revisionCount === 0 && latest.reviewedCount === 0 && latest.skippedCount === 0,
+    ),
+    zeroIssueWarning: Boolean(
+      latest && latest.p1Count + latest.p2Count + latest.p3Count === 0,
+    ),
+  };
+}
+
+type IssueExportRowDb = {
+  id: number;
+  issueKey: string | null;
+  status: string;
+  statusNote: string | null;
+  statusUpdatedAt: string | null;
+  updatedAt: string;
+  severity: string;
+  title: string;
+  relatedRevisions: string;
+  author: string;
+  logDate: string;
+  reviewId: number;
+};
+
+async function collectIssuePageItems(filters: IssueListFilters): Promise<ReviewIssueSummary[]> {
+  const items: ReviewIssueSummary[] = [];
+  let cursor = filters.cursor;
+  while (items.length < EXPORT_MAX_ROWS) {
+    const page = await getIssuePage({ ...filters, cursor, limit: 50 });
+    items.push(...page.items);
+    if (!page.hasMore || !page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return items.slice(0, EXPORT_MAX_ROWS);
+}
+
+export async function getIssueExportRows(filters: IssueListFilters = {}): Promise<ReviewExportRow[]> {
+  const items = await collectIssuePageItems(filters);
+  if (!items.length) return [];
+  const rows = await all<IssueExportRowDb>([
+    'SELECT i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
+    'i.status_updated_at AS statusUpdatedAt, l.updated_at AS updatedAt,',
+    'i.severity, i.title, i.related_revisions AS relatedRevisions,',
+    "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS author,",
+    'l.log_date AS logDate, l.id AS reviewId',
+    'FROM review_issues i JOIN review_logs l ON l.id = i.review_id',
+    `WHERE i.id IN (${items.map(() => '?').join(',')})`,
+  ].join(' '), items.map((item) => item.id));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return items.flatMap((item) => {
+    const row = byId.get(item.id);
+    if (!row) return [];
+    return [{
+      issueKey: row.issueKey ?? '',
+      status: row.status,
+      statusNote: row.statusNote ?? '',
+      updatedAt: row.statusUpdatedAt ?? row.updatedAt,
+      severity: row.severity,
+      title: row.title,
+      revision: row.relatedRevisions,
+      author: row.author,
+      logDate: row.logDate,
+      detailUrl: `/reviews/${row.reviewId}#issue-${row.id}`,
+    }];
+  });
+}
+
+export async function getReviewExportRows(filters: ReviewListFilters = {}): Promise<ReviewExportRow[]> {
+  const items: ReviewSummary[] = [];
+  let cursor = filters.cursor;
+  while (items.length < EXPORT_MAX_ROWS) {
+    const page = await getReviewPage({ ...filters, cursor, limit: 50 });
+    items.push(...page.items);
+    if (!page.hasMore || !page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  const selected = items.slice(0, EXPORT_MAX_ROWS);
+  if (!selected.length) return [];
+  const rows = await all<IssueExportRowDb>([
+    'SELECT l.id AS reviewId, l.log_date AS logDate, l.updated_at AS updatedAt,',
+    'i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
+    'i.status_updated_at AS statusUpdatedAt, i.severity, i.title,',
+    'i.related_revisions AS relatedRevisions,',
+    "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS author",
+    'FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id AND i.source_current = 1',
+    `WHERE l.id IN (${selected.map(() => '?').join(',')})`,
+    'ORDER BY l.log_date DESC, l.id DESC, i.id',
+  ].join(' '), selected.map((item) => item.id));
+  const grouped = new Map<number, IssueExportRowDb[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.reviewId) ?? [];
+    list.push(row);
+    grouped.set(row.reviewId, list);
+  }
+  return selected.flatMap((review) => {
+    const reviewRows = grouped.get(review.id) ?? [];
+    if (!reviewRows.length) {
+      return [{
+        issueKey: '', status: '', statusNote: '', updatedAt: review.updatedAt,
+        severity: '', title: review.title, revision: '', author: '',
+        logDate: review.logDate, detailUrl: `/reviews/${review.id}`,
+      }];
+    }
+    return reviewRows.map((row) => ({
+      issueKey: row.issueKey ?? '',
+      status: row.status ?? '',
+      statusNote: row.statusNote ?? '',
+      updatedAt: row.statusUpdatedAt ?? row.updatedAt,
+      severity: row.severity ?? '',
+      title: row.title ?? review.title,
+      revision: row.relatedRevisions ?? '',
+      author: row.author,
+      logDate: row.logDate,
+      detailUrl: row.id ? `/reviews/${row.reviewId}#issue-${row.id}` : `/reviews/${row.reviewId}`,
+    }));
+  }).slice(0, EXPORT_MAX_ROWS);
+}
+
+export function toCsv(rows: ReviewExportRow[]): string {
+  const headers = ['问题键', '状态', '处理说明', '更新时间', '严重级别', '标题', 'Revision', '作者', '日志日期', '详情链接'];
+  const protect = (value: string): string => /^[=+\-@]/.test(value) ? `'${value}` : value;
+  const cell = (value: string): string => `"${protect(value).replace(/"/g, '""')}"`;
+  return [headers, ...rows.map((row) => [
+    row.issueKey, row.status, row.statusNote, row.updatedAt, row.severity,
+    row.title, row.revision, row.author, row.logDate, row.detailUrl,
+  ])].map((line) => line.map(cell).join(',')).join('\r\n') + '\r\n';
 }
 
 export async function getReviewPage(

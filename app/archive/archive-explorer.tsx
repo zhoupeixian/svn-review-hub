@@ -32,6 +32,7 @@ export default function ArchiveExplorer({
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
 
   async function loadMore() {
     if (!cursor || loading) return;
@@ -54,8 +55,20 @@ export default function ArchiveExplorer({
     }
   }
 
+  const shareParams = new URLSearchParams({ scope: 'archived' });
+  appendFilters(shareParams, filters);
+  const share = typeof window === 'undefined' ? `/archive?${shareParams.toString()}` : `${window.location.origin}/archive?${shareParams.toString()}`;
+  const exportHref = `/api/reviews/export?${shareParams.toString()}`;
+  async function copyShareLink() {
+    try { await navigator.clipboard?.writeText(share); } catch { /* clipboard permission is optional */ }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
   return (
     <section className="mt-8">
+      <div className="mb-5 flex flex-wrap items-end gap-3"><label className="min-w-[18rem] flex-1">当前筛选链接<input readOnly aria-label="当前筛选链接" value={share} /></label><button type="button" onClick={copyShareLink} className="rounded-lg border border-[#b9cbbb] bg-white px-3 py-2 text-sm font-bold text-[#1d5b46]">{copied ? '已复制' : '复制当前筛选链接'}</button><a href={exportHref} className="rounded-lg bg-[#1d5b46] px-3 py-2 text-sm font-bold text-white">导出当前筛选</a></div>
+      <p className="mb-4 text-xs text-[#718077]">导出最多包含 1000 条归档日志。</p>
       <div className="grid gap-4">
         {items.map((review) => (
           <article key={review.id} aria-label={review.title} className="rounded-2xl border border-[#dfe7df] bg-white p-5 sm:p-6">
