@@ -13,6 +13,7 @@ const requestedDate = readDateArgument(process.argv.slice(2));
 const logRoot = process.env.REVIEW_LOG_ROOT || defaultLogRoot;
 const portalUrl = process.env.REVIEW_PORTAL_URL;
 const syncKey = process.env.REVIEW_PORTAL_SYNC_KEY;
+const dispatchToken = process.env.REVIEW_PORTAL_DISPATCH_TOKEN;
 
 if (!portalUrl || !syncKey) {
   console.error('未找到审查站同步配置。请检查 ' + configPath + '。');
@@ -25,7 +26,7 @@ if (!portalUrl || !syncKey) {
     let failed = 0;
     for (const file of files) {
       try {
-        await uploadReview(file, logRoot, portalUrl, syncKey);
+        await uploadReview(file, logRoot, portalUrl, syncKey, dispatchToken);
         console.log('已同步：' + path.basename(file));
       } catch (error) {
         failed += 1;
@@ -93,15 +94,19 @@ async function findReviewLogs(root, date) {
   return files.sort();
 }
 
-async function uploadReview(file, root, baseUrl, key) {
+async function uploadReview(file, root, baseUrl, key, serviceToken) {
   const markdown = await readFile(file, 'utf8');
   const sourceKey = path.relative(root, file).split(path.sep).join('/');
+  const headers = {
+    'content-type': 'application/json',
+    'x-review-sync-key': key,
+  };
+  if (serviceToken) {
+    headers['OAI-Sites-Authorization'] = 'Bearer ' + serviceToken;
+  }
   const response = await fetch(baseUrl.replace(/\/+$/, '') + '/api/reviews', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-review-sync-key': key,
-    },
+    headers,
     body: JSON.stringify({
       markdown,
       sourceKey,
