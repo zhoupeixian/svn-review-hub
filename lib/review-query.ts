@@ -32,16 +32,55 @@ export function normalizePageSize(value: unknown): 20 | 50 {
 }
 
 function assertPageCursor(value: unknown): asserts value is PageCursor {
+  const keys =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.keys(value)
+      : [];
   if (
     !value ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
+    keys.length !== 2 ||
+    !keys.includes('updatedAt') ||
+    !keys.includes('id') ||
     typeof (value as PageCursor).updatedAt !== 'string' ||
-    !(value as PageCursor).updatedAt.trim() ||
+    !isIsoSortTimestamp((value as PageCursor).updatedAt) ||
     !Number.isInteger((value as PageCursor).id)
   ) {
     throw new Error('无效的分页游标');
   }
+}
+
+function isIsoSortTimestamp(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2})))?$/.exec(
+    value,
+  );
+  if (!match) return false;
+
+  const [, year, month, day, hour, minute, second, , offsetHour, offsetMinute] =
+    match;
+  if (!isCalendarDate(Number(year), Number(month), Number(day))) return false;
+  if (!hour) return true;
+
+  return (
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59 &&
+    (!offsetHour ||
+      (Number(offsetHour) <= 23 && Number(offsetMinute) <= 59))
+  );
+}
+
+function isCalendarDate(year: number, month: number, day: number): boolean {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }
 
 function toBase64Url(value: string): string {
