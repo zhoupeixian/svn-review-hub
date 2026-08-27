@@ -11,11 +11,11 @@ export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
 export const ISSUE_STATUS_LABELS: Record<IssueStatus, string> = {
   open: '待处理',
-  pending_review: '待复核',
+  pending_review: '待确认',
   resolved: '已解决',
-  invalid: '无效问题',
-  by_design: '符合设计',
-  deferred: '延期处理',
+  invalid: '误判',
+  by_design: '设计如此',
+  deferred: '暂不处理',
 };
 
 export type IssueUpdateInput = {

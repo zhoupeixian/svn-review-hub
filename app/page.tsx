@@ -1,10 +1,11 @@
 import ReviewExplorer from '@/app/review-explorer';
-import { getReviewSummaries } from '@/lib/reviews';
+import { getCurrentReviewStats, getReviewPage } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
-  const reviews = await getReviewSummaries();
+  const [page, stats] = await Promise.all([getReviewPage({ scope: 'active' }), getCurrentReviewStats()]);
+  const reviews = page.items;
   const latest = reviews[0] ?? null;
 
   return (
@@ -76,7 +77,10 @@ export default async function Home() {
         </div>
       </section>
 
-      <ReviewExplorer reviews={reviews} />
+      <section className="mx-auto grid max-w-7xl gap-3 px-5 pb-10 sm:grid-cols-4 sm:px-8"><Stat label="当前日志" value={stats.reviewCount} /><Stat label="待处理问题" value={stats.openIssueCount} /><Stat label="待确认问题" value={stats.pendingReviewCount} /><Stat label="P1/P2 风险" value={stats.highRiskCount} /></section>
+      <ReviewExplorer initialItems={reviews} initialCursor={page.nextCursor} initialHasMore={page.hasMore} />
     </main>
   );
 }
+
+function Stat({ label, value }: { label: string; value: number }) { return <div className="rounded-xl border border-[#d9e4da] bg-white p-4"><p className="text-xs font-semibold text-[#718077]">{label}</p><p className="mt-1 text-2xl font-black text-[#245d46]">{value}</p></div>; }

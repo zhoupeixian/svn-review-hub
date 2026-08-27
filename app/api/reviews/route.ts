@@ -14,8 +14,9 @@ type SyncPayload = {
 };
 
 export function parseReviewFilters(url: URL) {
+  const statuses = url.searchParams.getAll('status').filter(Boolean);
   const status = url.searchParams.get('status') || undefined;
-  if (status && !ISSUE_STATUSES.includes(status as (typeof ISSUE_STATUSES)[number])) {
+  if (statuses.some((value) => !ISSUE_STATUSES.includes(value as (typeof ISSUE_STATUSES)[number]))) {
     throw new Error('问题状态无效。');
   }
   const severity = url.searchParams.get('severity') || undefined;
@@ -44,6 +45,7 @@ export function parseReviewFilters(url: URL) {
     revision: parsedRevision,
     severity: severity as 'P1' | 'P2' | 'P3' | undefined,
     status: status as (typeof ISSUE_STATUSES)[number] | undefined,
+    statuses: statuses.length > 1 ? statuses as (typeof ISSUE_STATUSES)[number][] : undefined,
     keyword: url.searchParams.get('keyword') || undefined,
     cursor: url.searchParams.get('cursor') || undefined,
     limit: parsedLimit,

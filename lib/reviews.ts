@@ -56,7 +56,7 @@ export type ReviewListFilters = {
   limit?: number;
 };
 
-export type IssueListFilters = ReviewListFilters;
+export type IssueListFilters = ReviewListFilters & { statuses?: IssueStatus[] };
 
 export type ReviewIssueSummary = {
   id: number;
@@ -78,8 +78,11 @@ export type ReviewIssueSummary = {
 export type ReviewDetail = ReviewSummary & {
   markdown: string;
   revisions: ParsedRevision[];
-  issues: ParsedIssue[];
+  issues: Array<ParsedIssue & Pick<ReviewIssueSummary, 'id' | 'status' | 'statusNote' | 'statusUpdatedAt' | 'version'> & { events: IssueEvent[] }>;
 };
+
+export type IssueEvent = { id: number; issueId: number; fromStatus: IssueStatus | null; toStatus: IssueStatus; note: string; createdAt: string };
+export type CurrentReviewStats = { reviewCount: number; openIssueCount: number; pendingReviewCount: number; highRiskCount: number };
 
 export type ReviewIngestionResult = ReviewSummary & {
   ingestion: {
@@ -473,6 +476,14 @@ export async function getReviewSummaries(): Promise<ReviewSummary[]> {
   return (await getReviewPage({ scope: 'active' })).items;
 }
 
+export async function getCurrentReviewStats(): Promise<CurrentReviewStats> {
+  return (await first<CurrentReviewStats>(`SELECT COUNT(DISTINCT l.id) AS reviewCount,
+      COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'open' THEN i.id END) AS openIssueCount,
+      COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'pending_review' THEN i.id END) AS pendingReviewCount,
+      COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status IN ('open', 'pending_review') AND i.severity IN ('P1', 'P2') THEN i.id END) AS highRiskCount
+     FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id WHERE l.archived_at IS NULL`)) ?? { reviewCount: 0, openIssueCount: 0, pendingReviewCount: 0, highRiskCount: 0 };
+}
+
 export async function getReviewPage(
   filters: ReviewListFilters = {},
 ): Promise<PageResult<ReviewSummary>> {
@@ -572,7 +583,10 @@ async function queryIssuePage(
     'i.source_current = 1',
   ];
   addReviewDateFilters(where, values, filters);
-  if (filters.status) {
+  if (filters.statuses?.length) {
+    where.push(`i.status IN (${filters.statuses.map(() => '?').join(',')})`);
+    values.push(...filters.statuses);
+  } else if (filters.status) {
     where.push('i.status = ?');
     values.push(filters.status);
   }
@@ -828,21 +842,26 @@ export async function getReviewDetail(id: number): Promise<ReviewDetail | null> 
       ].join(' '),
       [id],
     ),
-    all<ParsedIssue>(
+    all<ParsedIssue & Pick<ReviewIssueSummary, 'id' | 'status' | 'statusNote' | 'statusUpdatedAt' | 'version'>>(
       [
-        'SELECT severity, title, related_revisions AS relatedRevisions, detail',
-        'FROM review_issues WHERE review_id = ?',
+        'SELECT id, severity, title, related_revisions AS relatedRevisions, detail, status, status_note AS statusNote, status_updated_at AS statusUpdatedAt, version',
+        'FROM review_issues WHERE review_id = ? AND source_current = 1',
         "ORDER BY CASE severity WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END, id",
       ].join(' '),
       [id],
     ),
     getRuntime().FILES.get(review.contentObjectKey),
   ]);
+  const events = issues.length ? await all<IssueEvent>(
+    `SELECT id, issue_id AS issueId, from_status AS fromStatus, to_status AS toStatus, note, created_at AS createdAt
+     FROM review_issue_events WHERE issue_id IN (${issues.map(() => '?').join(',')}) ORDER BY created_at DESC, id DESC`,
+    issues.map((issue) => issue.id),
+  ) : [];
 
   return {
     ...review,
     revisions,
-    issues,
+    issues: issues.map((issue) => ({ ...issue, events: events.filter((event) => event.issueId === issue.id) })),
     markdown: object ? await object.text() : '',
   };
 }
