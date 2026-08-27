@@ -137,6 +137,7 @@ describe('归档库与归档管理 UI', () => {
     }), { status: 200 }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText('alice 归档')).toBeNull();
+    expect(screen.getByText('bob 归档')).toBeTruthy();
     expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('author=bob');
 
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ items: [], nextCursor: null, hasMore: false }), { status: 200 }));
