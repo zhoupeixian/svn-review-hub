@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 type Theme = 'office' | 'green' | 'night';
+const defaultTheme: Theme = 'green';
 
 const themes: Array<{ value: Theme; label: string }> = [
   { value: 'office', label: '柔和办公' },
@@ -16,11 +17,11 @@ function applyTheme(theme: Theme) {
 }
 
 export default function ThemeSwitcher() {
-  const [theme, setTheme] = useState<Theme>('office');
+  const [theme, setTheme] = useState<Theme>(defaultTheme);
 
   useEffect(() => {
     const saved = window.localStorage.getItem('review-portal-theme');
-    const next = themes.some((item) => item.value === saved) ? saved as Theme : 'office';
+    const next = themes.some((item) => item.value === saved) ? saved as Theme : defaultTheme;
     applyTheme(next);
     if (next === theme) return;
     const timer = window.setTimeout(() => setTheme(next), 0);

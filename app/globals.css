@@ -136,7 +136,7 @@ main {
   padding: 0.64rem 0.72rem;
   font: inherit;
 }
-.filter-panel button { border-radius: 0.65rem; padding: 0.64rem 0.85rem; font-size: 0.84rem; font-weight: 700; }
+.filter-apply, .filter-quiet { display: inline-flex; align-items: center; justify-content: center; border-radius: 0.65rem; padding: 0.64rem 0.85rem; font-size: 0.84rem; font-weight: 700; line-height: 1.2; }
 .filter-apply { background: var(--accent); color: var(--accent-contrast); }
 .filter-quiet { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
 .meta-chip { display: inline-flex; align-items: center; gap: 0.25rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-muted); color: var(--text-muted); padding: 0.24rem 0.55rem; font-size: 0.75rem; font-weight: 700; }
@@ -144,7 +144,12 @@ main {
 .status-panel { border: 1px solid var(--border); border-radius: 0.85rem; background: var(--surface-muted); padding: 0.9rem; }
 .home-quick-search { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1.1rem; box-shadow: 0 8px 24px rgb(30 42 36 / 4%); }
 .home-quick-search label { display: grid; gap: 0.38rem; color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
-.home-quick-search input { min-width: 0; border: 1px solid var(--border-strong); border-radius: 0.6rem; background: var(--surface); color: var(--text); padding: 0.62rem 0.72rem; font-size: 0.9rem; }
+.home-quick-search input { min-width: 0; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--surface-muted); color: var(--text); padding: 0.62rem 0.72rem; font-size: 0.9rem; }
+.home-quick-search .filter-apply { min-height: 2.65rem; padding-inline: 1rem; }
+.share-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; border: 1px solid var(--border); border-radius: 0.85rem; background: var(--surface-muted); padding: 0.85rem 1rem; }
+.archive-filter-panel { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface-muted); padding: 1rem; }
+.archive-filter-panel label { display: grid; gap: 0.38rem; color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
+.archive-filter-panel input, .archive-filter-panel select { min-width: 0; border: 1px solid var(--border); border-radius: 0.65rem; background: var(--surface); color: var(--text); padding: 0.64rem 0.72rem; font: inherit; }
 .stat-card { display: block; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
 .stat-card:hover { border-color: var(--accent); box-shadow: 0 9px 22px rgb(30 42 36 / 8%); transform: translateY(-2px); }
 
