@@ -24,7 +24,7 @@
 
 ---
 
-## 任务 1：建立可测试的生命周期与查询契约
+## Task 1：建立可测试的生命周期与查询契约
 
 **Files:**
 - Modify: `package.json`
@@ -76,7 +76,7 @@
   git commit -m "test: add review lifecycle contracts"
   ```
 
-## 任务 2：扩展 D1 模型并迁移历史数据
+## Task 2：扩展 D1 模型并迁移历史数据
 
 **Files:**
 - Modify: `db/schema.ts`
@@ -132,7 +132,7 @@
   git commit -m "feat: add review lifecycle storage"
   ```
 
-## 任务 3：实现当前与归档的服务端查询、全文检索和分页
+## Task 3：实现当前与归档的服务端查询、全文检索和分页
 
 **Files:**
 - Modify: `lib/reviews.ts`
@@ -172,7 +172,7 @@
   git commit -m "feat: query review records by scope"
   ```
 
-## 任务 4：重构导入合并，保护已有处理状态
+## Task 4：重构导入合并，保护已有处理状态
 
 **Files:**
 - Modify: `lib/review-parser.ts`
@@ -212,7 +212,7 @@
   git commit -m "feat: preserve issue state during review sync"
   ```
 
-## 任务 5：提供匿名状态更新与受限 API
+## Task 5：提供匿名状态更新与受限 API
 
 **Files:**
 - Modify: `app/api/reviews/route.ts`
@@ -267,7 +267,7 @@
   git commit -m "feat: add anonymous issue updates and archiving api"
   ```
 
-## 任务 6：交付当前日志首页、问题看板与详情协作体验
+## Task 6：交付当前日志首页、问题看板与详情协作体验
 
 **Files:**
 - Modify: `app/page.tsx`
@@ -314,7 +314,7 @@
   git commit -m "feat: add current review collaboration views"
   ```
 
-## 任务 7：交付归档库、恢复与批量归档管理
+## Task 7：交付归档库、恢复与批量归档管理
 
 **Files:**
 - Create: `app/archive/page.tsx`
@@ -355,7 +355,7 @@
   git commit -m "feat: add archived review library"
   ```
 
-## 任务 8：提供 CSV 导出、同步健康提示和共享筛选
+## Task 8：提供 CSV 导出、同步健康提示和共享筛选
 
 **Files:**
 - Create: `app/api/issues/export/route.ts`
@@ -399,7 +399,7 @@
   git commit -m "feat: add review export and sync health"
   ```
 
-## 任务 9：全链路回归、迁移演练和发布门禁
+## Task 9：全链路回归、迁移演练和发布门禁
 
 **Files:**
 - Modify only if validation exposes a direct defect: the smallest affected implementation/test file

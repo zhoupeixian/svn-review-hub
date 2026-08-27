@@ -3,8 +3,25 @@ import type { ChatGPTUser } from '@/app/chatgpt-auth';
 import {
   type ParsedIssue,
   type ParsedRevision,
+  normalizeRelatedRevisions,
   parseReviewMarkdown,
+  parseReviewScopeCounts,
 } from '@/lib/review-parser';
+import {
+  ISSUE_STATUS_LABELS,
+  ISSUE_STATUSES,
+  type IssueStatus,
+  normalizeIssueKey,
+} from '@/lib/issue-lifecycle';
+import * as XLSX from 'xlsx-js-style';
+import {
+  decodePageCursor,
+  encodePageCursor,
+  normalizePageSize,
+  type PageResult,
+} from '@/lib/review-query';
+
+export type { PageResult } from '@/lib/review-query';
 
 type SqlValue = string | number | null;
 
@@ -24,12 +41,86 @@ export type ReviewSummary = {
   syncMode: string;
   importedAt: string;
   updatedAt: string;
+  archivedAt: string | null;
+};
+
+export type ReviewScope = 'active' | 'archived';
+
+export type ReviewListFilters = {
+  scope?: ReviewScope;
+  fromDate?: string;
+  toDate?: string;
+  author?: string;
+  revision?: number;
+  severity?: ParsedIssue['severity'];
+  severities?: ParsedIssue['severity'][];
+  status?: IssueStatus;
+  keyword?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type IssueListFilters = ReviewListFilters & { statuses?: IssueStatus[] };
+
+export type ReviewIssueSummary = {
+  id: number;
+  reviewId: number;
+  issueKey: string | null;
+  severity: ParsedIssue['severity'];
+  title: string;
+  relatedRevisions: string;
+  status: IssueStatus;
+  statusNote: string | null;
+  statusUpdatedAt: string | null;
+  sourceCurrent: number;
+  version: number;
+  logDate: string;
+  reviewTitle: string;
+  authors: string;
 };
 
 export type ReviewDetail = ReviewSummary & {
   markdown: string;
   revisions: ParsedRevision[];
-  issues: ParsedIssue[];
+  issues: Array<ParsedIssue & Pick<ReviewIssueSummary, 'id' | 'status' | 'statusNote' | 'statusUpdatedAt' | 'version'> & { events: IssueEvent[] }>;
+};
+
+export type IssueEvent = { id: number; issueId: number; fromStatus: IssueStatus | null; toStatus: IssueStatus; note: string; createdAt: string };
+export type CurrentReviewStats = { reviewCount: number; openIssueCount: number; pendingReviewCount: number; highRiskCount: number };
+
+export type SyncHealth = {
+  latestAutomationSyncAt: string | null;
+  latestLogDate: string | null;
+  latestRevision: number | null;
+  reviewCount: number;
+  currentIssueCount: number;
+  pendingIssueCount: number;
+  parseFailure: boolean;
+  zeroIssueWarning: boolean;
+};
+
+export type ReviewExportRow = {
+  issueKey: string;
+  status: string;
+  statusNote: string;
+  updatedAt: string;
+  severity: string;
+  title: string;
+  revision: string;
+  author: string;
+  logDate: string;
+  sourceName: string;
+  detailUrl: string;
+};
+
+const EXPORT_MAX_ROWS = 1000;
+
+export type ReviewIngestionResult = ReviewSummary & {
+  ingestion: {
+    createdIssueCount: number;
+    updatedIssueCount: number;
+    parsedIssueCount: number;
+  };
 };
 
 type ReviewRow = ReviewSummary & {
@@ -42,7 +133,20 @@ type RuntimeEnv = {
   REVIEW_SYNC_KEY?: string;
 };
 
-let schemaReady = new WeakMap<D1Database, Promise<void>>();
+const schemaReady = new WeakMap<D1Database, Promise<void>>();
+
+type SchemaColumn = {
+  name: string;
+};
+
+type IssueIdentityRow = {
+  id: number;
+  reviewId: number;
+  issueKey: string | null;
+  severity: string;
+  title: string;
+  relatedRevisions: string;
+};
 
 function getRuntime(): RuntimeEnv {
   const runtime = env as unknown as RuntimeEnv;
@@ -58,7 +162,7 @@ export async function ensureReviewSchema(): Promise<void> {
   if (cached) return cached;
 
   const ready = (async () => {
-    const statements = [
+    const baseStatements = [
       [
         'CREATE TABLE IF NOT EXISTS review_logs (',
         'id INTEGER PRIMARY KEY AUTOINCREMENT,',
@@ -79,7 +183,8 @@ export async function ensureReviewSchema(): Promise<void> {
         'sync_mode TEXT NOT NULL,',
         'imported_by TEXT NOT NULL,',
         'imported_at TEXT NOT NULL,',
-        'updated_at TEXT NOT NULL',
+        'updated_at TEXT NOT NULL,',
+        'archived_at TEXT',
         ')',
       ].join(' '),
       [
@@ -91,17 +196,25 @@ export async function ensureReviewSchema(): Promise<void> {
         'committed_at TEXT NOT NULL,',
         'description TEXT NOT NULL,',
         'conclusion TEXT NOT NULL,',
-        'UNIQUE(review_id, revision)',
+        'UNIQUE(review_id, revision),',
+        'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
         ')',
       ].join(' '),
       [
         'CREATE TABLE IF NOT EXISTS review_issues (',
         'id INTEGER PRIMARY KEY AUTOINCREMENT,',
         'review_id INTEGER NOT NULL,',
+        'issue_key TEXT,',
         'severity TEXT NOT NULL,',
         'title TEXT NOT NULL,',
         'related_revisions TEXT NOT NULL,',
-        'detail TEXT NOT NULL',
+        'detail TEXT NOT NULL,',
+        `status TEXT NOT NULL DEFAULT '${ISSUE_STATUSES[0]}',`,
+        'status_note TEXT,',
+        'status_updated_at TEXT,',
+        'source_current INTEGER NOT NULL DEFAULT 1,',
+        'version INTEGER NOT NULL DEFAULT 0,',
+        'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
         ')',
       ].join(' '),
       [
@@ -112,15 +225,135 @@ export async function ensureReviewSchema(): Promise<void> {
         'created_at TEXT NOT NULL',
         ')',
       ].join(' '),
+    ];
+
+    await DB.batch(baseStatements.map((statement) => DB.prepare(statement)));
+
+    const [logColumns, issueColumns] = await Promise.all([
+      DB.prepare('PRAGMA table_info(review_logs)').all<SchemaColumn>(),
+      DB.prepare('PRAGMA table_info(review_issues)').all<SchemaColumn>(),
+    ]);
+    const logColumnNames = new Set(
+      (logColumns.results ?? []).map((column) => column.name),
+    );
+    const issueColumnNames = new Set(
+      (issueColumns.results ?? []).map((column) => column.name),
+    );
+    const upgrades: string[] = [];
+    if (!logColumnNames.has('archived_at')) {
+      upgrades.push('ALTER TABLE review_logs ADD COLUMN archived_at TEXT');
+    }
+    if (!issueColumnNames.has('issue_key')) {
+      upgrades.push('ALTER TABLE review_issues ADD COLUMN issue_key TEXT');
+    }
+    if (!issueColumnNames.has('status')) {
+      upgrades.push(
+        `ALTER TABLE review_issues ADD COLUMN status TEXT NOT NULL DEFAULT '${ISSUE_STATUSES[0]}'`,
+      );
+    }
+    if (!issueColumnNames.has('status_note')) {
+      upgrades.push('ALTER TABLE review_issues ADD COLUMN status_note TEXT');
+    }
+    if (!issueColumnNames.has('status_updated_at')) {
+      upgrades.push('ALTER TABLE review_issues ADD COLUMN status_updated_at TEXT');
+    }
+    if (!issueColumnNames.has('source_current')) {
+      upgrades.push(
+        'ALTER TABLE review_issues ADD COLUMN source_current INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+    if (!issueColumnNames.has('version')) {
+      upgrades.push(
+        'ALTER TABLE review_issues ADD COLUMN version INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (upgrades.length) {
+      await DB.batch(upgrades.map((statement) => DB.prepare(statement)));
+    }
+
+    await DB.batch([
+      DB.prepare(
+        'UPDATE review_issues SET status = ? WHERE status IS NULL OR TRIM(status) = ?',
+      ).bind(ISSUE_STATUSES[0], ''),
+      DB.prepare(
+        'UPDATE review_issues SET source_current = 1 WHERE source_current IS NULL',
+      ),
+      DB.prepare('UPDATE review_issues SET version = 0 WHERE version IS NULL'),
+    ]);
+    await backfillIssueKeys(DB);
+
+    const lifecycleStatements = [
+      [
+        'CREATE TABLE IF NOT EXISTS review_issue_events (',
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+        'issue_id INTEGER NOT NULL,',
+        'from_status TEXT,',
+        'to_status TEXT NOT NULL,',
+        'note TEXT NOT NULL,',
+        'created_at TEXT NOT NULL,',
+        'FOREIGN KEY(issue_id) REFERENCES review_issues(id) ON DELETE CASCADE',
+        ')',
+      ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS anonymous_update_limits (',
+        'client_hash TEXT PRIMARY KEY,',
+        'window_started_at TEXT NOT NULL,',
+        'request_count INTEGER NOT NULL',
+        ')',
+      ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS archive_operation_previews (',
+        'token TEXT PRIMARY KEY,',
+        'admin_user_id TEXT NOT NULL,',
+        'review_ids_json TEXT NOT NULL,',
+        'review_count INTEGER NOT NULL,',
+        'revision_count INTEGER NOT NULL,',
+        'issue_count INTEGER NOT NULL,',
+        'created_at TEXT NOT NULL,',
+        'expires_at TEXT NOT NULL,',
+        'FOREIGN KEY(admin_user_id) REFERENCES admin_users(user_id) ON DELETE CASCADE',
+        ')',
+      ].join(' '),
       'CREATE INDEX IF NOT EXISTS idx_review_logs_log_date ON review_logs(log_date)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_severity ON review_logs(p1_count, p2_count)',
+      'CREATE INDEX IF NOT EXISTS idx_review_logs_archive_date_id ON review_logs(archived_at, log_date, id)',
       'CREATE INDEX IF NOT EXISTS idx_review_revisions_revision ON review_revisions(revision)',
       'CREATE INDEX IF NOT EXISTS idx_review_revisions_author ON review_revisions(author)',
       'CREATE INDEX IF NOT EXISTS idx_review_issues_review_id ON review_issues(review_id)',
       'CREATE INDEX IF NOT EXISTS idx_review_issues_severity ON review_issues(severity)',
+      'CREATE INDEX IF NOT EXISTS idx_review_issues_status_current_review ON review_issues(status, source_current, review_id)',
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_issues_review_issue_key ON review_issues(review_id, issue_key) WHERE issue_key IS NOT NULL',
+      'CREATE INDEX IF NOT EXISTS idx_review_issue_events_issue_created ON review_issue_events(issue_id, created_at)',
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issues_review_fk_insert',
+        'BEFORE INSERT ON review_issues',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_logs WHERE id = NEW.review_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issues_review_fk_update',
+        'BEFORE UPDATE OF review_id ON review_issues',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_logs WHERE id = NEW.review_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issue_events_issue_fk_insert',
+        'BEFORE INSERT ON review_issue_events',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_issues WHERE id = NEW.issue_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issue_events_issue_fk_update',
+        'BEFORE UPDATE OF issue_id ON review_issue_events',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_issues WHERE id = NEW.issue_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
     ];
 
-    await DB.batch(statements.map((statement) => DB.prepare(statement)));
+    await DB.batch(
+      lifecycleStatements.map((statement) => DB.prepare(statement)),
+    );
+    await ensureReviewSearch(DB);
     await DB.prepare('PRAGMA optimize').run();
   })();
 
@@ -131,6 +364,129 @@ export async function ensureReviewSchema(): Promise<void> {
     schemaReady.delete(DB);
     throw error;
   }
+}
+
+async function backfillIssueKeys(DB: D1Database): Promise<void> {
+  const result = await DB.prepare(
+    `SELECT id, review_id AS reviewId, issue_key AS issueKey,
+            severity, title, related_revisions AS relatedRevisions
+     FROM review_issues
+     ORDER BY review_id, id`,
+  ).all<IssueIdentityRow>();
+  const usedKeys = new Set<string>();
+  const updates: D1PreparedStatement[] = [];
+
+  for (const issue of result.results ?? []) {
+    const prefix = `${issue.reviewId}:`;
+    const currentKey = issue.issueKey?.trim() ?? '';
+    const baseKey =
+      currentKey ||
+      normalizeIssueKey(
+        `${issue.severity}:${issue.title}:${issue.relatedRevisions}`,
+      );
+    let issueKey = baseKey;
+    if (usedKeys.has(prefix + issueKey)) {
+      issueKey = `${baseKey}:${issue.id}`;
+    }
+    usedKeys.add(prefix + issueKey);
+
+    if (issue.issueKey !== issueKey) {
+      updates.push(
+        DB.prepare('UPDATE review_issues SET issue_key = ? WHERE id = ?').bind(
+          issueKey,
+          issue.id,
+        ),
+      );
+    }
+  }
+
+  if (updates.length) await DB.batch(updates);
+}
+
+async function ensureReviewSearch(DB: D1Database): Promise<void> {
+  const searchColumns = [
+    'review_id UNINDEXED',
+    'title',
+    'overview',
+    'scope_text',
+    'revisions',
+    'authors',
+    'descriptions',
+    'issue_titles',
+    'issue_details',
+    'status_notes',
+  ].join(', ');
+  const existingSearch = await DB.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_search'",
+  ).first();
+  if (!existingSearch) {
+    await DB.prepare(
+      `CREATE VIRTUAL TABLE review_search USING fts5(${searchColumns}, tokenize='trigram')`,
+    ).run();
+    await rebuildAllReviewSearch(DB);
+  }
+
+  const rebuildNewReview = reviewSearchTriggerBody('NEW.id');
+  const rebuildNewRevisionReview = reviewSearchTriggerBody('NEW.review_id');
+  const rebuildOldRevisionReview = reviewSearchTriggerBody('OLD.review_id');
+  const triggers = [
+    `CREATE TRIGGER IF NOT EXISTS review_search_logs_ai AFTER INSERT ON review_logs BEGIN ${rebuildNewReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_logs_au AFTER UPDATE ON review_logs BEGIN ${rebuildNewReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_logs_ad AFTER DELETE ON review_logs BEGIN DELETE FROM review_search WHERE rowid = OLD.id; END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_revisions_ai AFTER INSERT ON review_revisions BEGIN ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_revisions_au AFTER UPDATE ON review_revisions BEGIN ${rebuildOldRevisionReview} ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_revisions_ad AFTER DELETE ON review_revisions BEGIN ${rebuildOldRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_issues_ai AFTER INSERT ON review_issues BEGIN ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_issues_au AFTER UPDATE ON review_issues BEGIN ${rebuildOldRevisionReview} ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_issues_ad AFTER DELETE ON review_issues BEGIN ${rebuildOldRevisionReview} END`,
+  ];
+  await DB.batch(triggers.map((statement) => DB.prepare(statement)));
+}
+
+async function rebuildAllReviewSearch(DB: D1Database): Promise<void> {
+  await DB.batch([
+    DB.prepare('DELETE FROM review_search'),
+    DB.prepare(reviewSearchInsertSql()),
+  ]);
+}
+
+export async function rebuildReviewSearch(reviewId: number): Promise<void> {
+  if (!Number.isInteger(reviewId) || reviewId <= 0) {
+    throw new Error('审查日志 ID 无效。');
+  }
+  await ensureReviewSchema();
+  const { DB } = getRuntime();
+  await DB.batch([
+    DB.prepare('DELETE FROM review_search WHERE rowid = ?').bind(reviewId),
+    DB.prepare(reviewSearchInsertSql('l.id = ?')).bind(reviewId),
+  ]);
+}
+
+function reviewSearchTriggerBody(reviewId: string): string {
+  return [
+    `DELETE FROM review_search WHERE rowid = ${reviewId};`,
+    reviewSearchInsertSql(`l.id = ${reviewId}`) + ';',
+  ].join(' ');
+}
+
+function reviewSearchInsertSql(where?: string): string {
+  return [
+    'INSERT INTO review_search (',
+    'rowid, review_id, title, overview, scope_text, revisions, authors,',
+    'descriptions, issue_titles, issue_details, status_notes',
+    ')',
+    'SELECT l.id, l.id, l.title, l.overview, l.scope_text,',
+    "COALESCE((SELECT group_concat('r' || revision, ' ') FROM review_revisions WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(author, ' ') FROM review_revisions WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(description, ' ') FROM review_revisions WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(title, ' ') FROM review_issues WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(detail, ' ') FROM review_issues WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(status_note, ' ') FROM review_issues WHERE review_id = l.id), '')",
+    'FROM review_logs l',
+    where ? `WHERE ${where}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 async function all<T>(
@@ -153,18 +509,587 @@ async function first<T>(
 }
 
 export async function getReviewSummaries(): Promise<ReviewSummary[]> {
-  return all<ReviewSummary>(
+  return (await getReviewPage({ scope: 'active' })).items;
+}
+
+export async function getCurrentReviewStats(): Promise<CurrentReviewStats> {
+  return (await first<CurrentReviewStats>(`SELECT COUNT(DISTINCT l.id) AS reviewCount,
+      COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'open' THEN i.id END) AS openIssueCount,
+      COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'pending_review' THEN i.id END) AS pendingReviewCount,
+      COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status IN ('open', 'pending_review') AND i.severity IN ('P1', 'P2') THEN i.id END) AS highRiskCount
+     FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id WHERE l.archived_at IS NULL`)) ?? { reviewCount: 0, openIssueCount: 0, pendingReviewCount: 0, highRiskCount: 0 };
+}
+
+export async function getSyncHealth(): Promise<SyncHealth> {
+  const latest = await first<{
+    updatedAt: string;
+    logDate: string;
+    revisionCount: number;
+    reviewedCount: number;
+    skippedCount: number;
+    p1Count: number;
+    p2Count: number;
+    p3Count: number;
+    id: number;
+    scopeText: string;
+  }>([
+    'SELECT updated_at AS updatedAt, log_date AS logDate,',
+    'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
+    'skipped_count AS skippedCount, p1_count AS p1Count,',
+    'p2_count AS p2Count, p3_count AS p3Count, scope_text AS scopeText, id',
+    'FROM review_logs WHERE sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
+  ].join(' '), ['automation']);
+  const normalizedLatest = latest ? normalizeReviewCounts(latest) : null;
+  const latestRevision = normalizedLatest
+    ? await first<{ revision: number }>(
+        'SELECT MAX(revision) AS revision FROM review_revisions WHERE review_id = ?',
+        [normalizedLatest.id],
+      )
+    : null;
+  const stats = await getCurrentReviewStats();
+  const reviewCount = await first<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM review_logs WHERE archived_at IS NULL',
+  );
+  const currentIssueCount = await first<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM review_issues i
+     JOIN review_logs l ON l.id = i.review_id
+     WHERE l.archived_at IS NULL AND i.source_current = 1`,
+  );
+
+  return {
+    latestAutomationSyncAt: normalizedLatest?.updatedAt ?? null,
+    latestLogDate: normalizedLatest?.logDate ?? null,
+    latestRevision: latestRevision?.revision ?? null,
+    reviewCount: reviewCount?.count ?? stats.reviewCount,
+    currentIssueCount: currentIssueCount?.count ?? 0,
+    pendingIssueCount: stats.pendingReviewCount,
+    parseFailure: Boolean(
+      normalizedLatest && normalizedLatest.revisionCount === 0 && normalizedLatest.reviewedCount === 0 && normalizedLatest.skippedCount === 0,
+    ),
+    zeroIssueWarning: Boolean(
+      normalizedLatest && normalizedLatest.p1Count + normalizedLatest.p2Count + normalizedLatest.p3Count === 0,
+    ),
+  };
+}
+
+type IssueExportRowDb = {
+  id: number;
+  issueKey: string | null;
+  status: string;
+  statusNote: string | null;
+  statusUpdatedAt: string | null;
+  updatedAt: string;
+  severity: string;
+  title: string;
+  relatedRevisions: string;
+  author: string;
+  logDate: string;
+  sourceName: string;
+  reviewId: number;
+};
+
+async function collectIssuePageItems(filters: IssueListFilters): Promise<ReviewIssueSummary[]> {
+  const items: ReviewIssueSummary[] = [];
+  let cursor = filters.cursor;
+  while (items.length < EXPORT_MAX_ROWS) {
+    const page = await getIssuePage({ ...filters, cursor, limit: 50 });
+    items.push(...page.items);
+    if (!page.hasMore || !page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  return items.slice(0, EXPORT_MAX_ROWS);
+}
+
+export async function getIssueExportRows(filters: IssueListFilters = {}): Promise<ReviewExportRow[]> {
+  const items = await collectIssuePageItems(filters);
+  if (!items.length) return [];
+  const rows = await all<IssueExportRowDb>([
+    'SELECT i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
+    'i.status_updated_at AS statusUpdatedAt, l.updated_at AS updatedAt,',
+    'i.severity, i.title, i.related_revisions AS relatedRevisions,',
+    "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS author,",
+    'l.log_date AS logDate, l.source_name AS sourceName, l.id AS reviewId',
+    'FROM review_issues i JOIN review_logs l ON l.id = i.review_id',
+    `WHERE i.id IN (${items.map(() => '?').join(',')})`,
+  ].join(' '), items.map((item) => item.id));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return items.flatMap((item) => {
+    const row = byId.get(item.id);
+    if (!row) return [];
+    return [{
+      issueKey: row.issueKey ?? '',
+      status: row.status,
+      statusNote: row.statusNote ?? '',
+      updatedAt: row.statusUpdatedAt ?? row.updatedAt,
+      severity: row.severity,
+      title: row.title,
+      revision: row.relatedRevisions,
+      author: row.author,
+      logDate: row.logDate,
+      sourceName: row.sourceName,
+      detailUrl: `/reviews/${row.reviewId}#issue-${row.id}`,
+    }];
+  });
+}
+
+export async function getReviewExportRows(filters: ReviewListFilters = {}): Promise<ReviewExportRow[]> {
+  const items: ReviewSummary[] = [];
+  let cursor = filters.cursor;
+  while (items.length < EXPORT_MAX_ROWS) {
+    const page = await getReviewPage({ ...filters, cursor, limit: 50 });
+    items.push(...page.items);
+    if (!page.hasMore || !page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  const selected = items.slice(0, EXPORT_MAX_ROWS);
+  if (!selected.length) return [];
+  const rows = await all<IssueExportRowDb>([
+    'SELECT l.id AS reviewId, l.log_date AS logDate, l.source_name AS sourceName, l.updated_at AS updatedAt,',
+    'i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
+    'i.status_updated_at AS statusUpdatedAt, i.severity, i.title,',
+    'i.related_revisions AS relatedRevisions,',
+    "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS author",
+    'FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id AND i.source_current = 1',
+    `WHERE l.id IN (${selected.map(() => '?').join(',')})`,
+    'ORDER BY l.log_date DESC, l.id DESC, i.id',
+  ].join(' '), selected.map((item) => item.id));
+  const grouped = new Map<number, IssueExportRowDb[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.reviewId) ?? [];
+    list.push(row);
+    grouped.set(row.reviewId, list);
+  }
+  return selected.flatMap((review) => {
+    const reviewRows = grouped.get(review.id) ?? [];
+    if (!reviewRows.length) {
+      return [{
+        issueKey: '', status: '', statusNote: '', updatedAt: review.updatedAt,
+        severity: '', title: review.title, revision: '', author: '',
+        logDate: review.logDate, sourceName: review.sourceName, detailUrl: `/reviews/${review.id}`,
+      }];
+    }
+    return reviewRows.map((row) => ({
+      issueKey: row.issueKey ?? '',
+      status: row.status ?? '',
+      statusNote: row.statusNote ?? '',
+      updatedAt: row.statusUpdatedAt ?? row.updatedAt,
+      severity: row.severity ?? '',
+      title: row.title ?? review.title,
+      revision: row.relatedRevisions ?? '',
+      author: row.author,
+      logDate: row.logDate,
+      sourceName: row.sourceName,
+      detailUrl: row.id ? `/reviews/${row.reviewId}#issue-${row.id}` : `/reviews/${row.reviewId}`,
+    }));
+  }).slice(0, EXPORT_MAX_ROWS);
+}
+
+export function toCsv(rows: ReviewExportRow[]): string {
+  const headers = ['问题键', '状态', '处理说明', '更新时间', '严重级别', '标题', 'Revision', '作者', '日志日期', '详情链接'];
+  const protect = (value: string): string => /^\s*[=+\-@]/.test(value) ? `'${value}` : value;
+  const cell = (value: string): string => `"${protect(value).replace(/"/g, '""')}"`;
+  return [headers, ...rows.map((row) => [
+    row.issueKey, row.status, row.statusNote, row.updatedAt, row.severity,
+    row.title, row.revision, row.author, row.logDate, row.detailUrl,
+  ])].map((line) => line.map(cell).join(',')).join('\r\n') + '\r\n';
+}
+
+export function toIssueWorkbook(rows: ReviewExportRow[], origin: string): Uint8Array {
+  const headers = ['严重级别', '状态', '问题标题', '关联 Revision', '提交人', '日志日期', '来源日志', '处理说明', '最后更新', '详情链接'];
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    headers,
+    ...rows.map((row) => [
+      protectSpreadsheetText(row.severity),
+      protectSpreadsheetText(ISSUE_STATUS_LABELS[row.status as IssueStatus] ?? row.status),
+      protectSpreadsheetText(row.title),
+      protectSpreadsheetText(row.revision),
+      protectSpreadsheetText(row.author),
+      protectSpreadsheetText(row.logDate),
+      protectSpreadsheetText(row.sourceName),
+      protectSpreadsheetText(row.statusNote),
+      protectSpreadsheetText(row.updatedAt),
+      '打开详情',
+    ]),
+  ]);
+
+  const headerStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' } },
+    fill: { fgColor: { rgb: '315C4B' } },
+    alignment: { vertical: 'center' },
+  };
+  for (let column = 0; column < headers.length; column += 1) {
+    const cell = worksheet[XLSX.utils.encode_cell({ r: 0, c: column })];
+    if (cell) cell.s = headerStyle;
+  }
+  for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+    for (const column of [2, 7]) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: column })];
+      if (cell) cell.s = { alignment: { vertical: 'top', wrapText: true } };
+    }
+    const link = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: 9 })];
+    if (link) {
+      link.l = { Target: safeDetailUrl(rows[rowIndex - 1].detailUrl, origin) };
+      link.s = { font: { color: { rgb: '1D5B46' }, underline: true } };
+    }
+  }
+  worksheet['!autofilter'] = { ref: `A1:J${Math.max(rows.length + 1, 1)}` };
+  worksheet['!cols'] = [
+    { wch: 10 }, { wch: 12 }, { wch: 42 }, { wch: 18 }, { wch: 28 },
+    { wch: 13 }, { wch: 24 }, { wch: 42 }, { wch: 20 }, { wch: 14 },
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '问题跟进');
+  return new Uint8Array(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }));
+}
+
+function protectSpreadsheetText(value: string): string {
+  return /^\s*[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
+function safeDetailUrl(path: string, origin: string): string {
+  if (!/^\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
+    throw new Error('导出详情链接无效。');
+  }
+  return new URL(path, origin).toString();
+}
+
+export async function getReviewPage(
+  filters: ReviewListFilters = {},
+): Promise<PageResult<ReviewSummary>> {
+  const scope = normalizeScope(filters.scope);
+  const limit = normalizeRepositoryPageSize(filters.limit);
+  const keyword = filters.keyword?.trim() ?? '';
+  const useLike = keyword.length > 0 && [...keyword].length < 3;
+
+  try {
+    return await queryReviewPage(filters, scope, limit, keyword, useLike);
+  } catch (error) {
+    if (!keyword || useLike || !isFtsQueryError(error)) throw error;
+    return queryReviewPage(filters, scope, limit, keyword, true);
+  }
+}
+
+export async function getIssuePage(
+  filters: IssueListFilters = {},
+): Promise<PageResult<ReviewIssueSummary>> {
+  const scope = normalizeScope(filters.scope);
+  const limit = normalizeRepositoryPageSize(filters.limit);
+  const keyword = filters.keyword?.trim() ?? '';
+  const useLike = keyword.length > 0 && [...keyword].length < 3;
+
+  try {
+    return await queryIssuePage(filters, scope, limit, keyword, useLike);
+  } catch (error) {
+    if (!keyword || useLike || !isFtsQueryError(error)) throw error;
+    return queryIssuePage(filters, scope, limit, keyword, true);
+  }
+}
+
+type ReviewSummaryRow = ReviewSummary & {
+  cursorUpdatedAt: string;
+};
+
+type ReviewIssueSummaryRow = ReviewIssueSummary & {
+  cursorUpdatedAt: string;
+};
+
+const ISSUE_CURSOR_FLOOR = '1000-01-01T00:00:00.000Z';
+
+async function queryReviewPage(
+  filters: ReviewListFilters,
+  scope: ReviewScope,
+  limit: 20 | 50,
+  keyword: string,
+  useLike: boolean,
+): Promise<PageResult<ReviewSummary>> {
+  const values: SqlValue[] = [];
+  const where = [
+    scope === 'active' ? 'l.archived_at IS NULL' : 'l.archived_at IS NOT NULL',
+  ];
+  addReviewDateFilters(where, values, filters);
+  addReviewRevisionFilters(where, values, filters);
+  addReviewIssueFilters(where, values, filters);
+  addReviewKeywordFilter(where, values, keyword, useLike);
+
+  if (filters.cursor) {
+    const cursor = decodePageCursor(filters.cursor);
+    where.push('(l.log_date < ? OR (l.log_date = ? AND l.id < ?))');
+    values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+  }
+  values.push(limit + 1);
+
+  const rows = await all<ReviewSummaryRow>(
     [
-      'SELECT id, log_date AS logDate, title, overview,',
-      'scope_text AS scopeText, source_name AS sourceName,',
-      'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
-      'skipped_count AS skippedCount, p1_count AS p1Count,',
-      'p2_count AS p2Count, p3_count AS p3Count,',
-      'sync_mode AS syncMode, imported_at AS importedAt,',
-      'updated_at AS updatedAt',
-      'FROM review_logs',
-      'ORDER BY log_date DESC, id DESC',
+      'SELECT l.id, l.log_date AS logDate, l.log_date AS cursorUpdatedAt,',
+      'l.title, l.overview, l.scope_text AS scopeText,',
+      'l.source_name AS sourceName, l.revision_count AS revisionCount,',
+      'l.reviewed_count AS reviewedCount, l.skipped_count AS skippedCount,',
+      'l.p1_count AS p1Count, l.p2_count AS p2Count, l.p3_count AS p3Count,',
+      'l.sync_mode AS syncMode, l.imported_at AS importedAt,',
+      'l.updated_at AS updatedAt, l.archived_at AS archivedAt',
+      'FROM review_logs l',
+      `WHERE ${where.join(' AND ')}`,
+      'ORDER BY l.log_date DESC, l.id DESC',
+      'LIMIT ?',
     ].join(' '),
+    values,
+  );
+
+  const page = toPageResult(rows, limit);
+  return { ...page, items: page.items.map(normalizeReviewCounts) };
+}
+
+async function queryIssuePage(
+  filters: IssueListFilters,
+  scope: ReviewScope,
+  limit: 20 | 50,
+  keyword: string,
+  useLike: boolean,
+): Promise<PageResult<ReviewIssueSummary>> {
+  const values: SqlValue[] = [];
+  const sortExpression = `COALESCE(i.status_updated_at, '${ISSUE_CURSOR_FLOOR}')`;
+  const where = [
+    scope === 'active' ? 'l.archived_at IS NULL' : 'l.archived_at IS NOT NULL',
+    'i.source_current = 1',
+  ];
+  addReviewDateFilters(where, values, filters);
+  if (filters.statuses?.length) {
+    where.push(`i.status IN (${filters.statuses.map(() => '?').join(',')})`);
+    values.push(...filters.statuses);
+  } else if (filters.status) {
+    where.push('i.status = ?');
+    values.push(filters.status);
+  }
+  if (filters.severities?.length) {
+    where.push(`i.severity IN (${filters.severities.map(() => '?').join(',')})`);
+    values.push(...filters.severities);
+  } else if (filters.severity) {
+    where.push('i.severity = ?');
+    values.push(filters.severity);
+  }
+  if (filters.author?.trim()) {
+    where.push(
+      'EXISTS (SELECT 1 FROM review_revisions r WHERE r.review_id = l.id AND r.author LIKE ? ESCAPE \'\\\')',
+    );
+    values.push(toLikePattern(filters.author.trim()));
+  }
+  if (Number.isInteger(filters.revision)) {
+    where.push('i.related_revisions LIKE ? ESCAPE \'\\\'');
+    values.push(toLikePattern(String(filters.revision)));
+  }
+  addIssueKeywordFilter(where, values, keyword, useLike);
+
+  if (filters.cursor) {
+    const cursor = decodePageCursor(filters.cursor);
+    where.push(
+      `(${sortExpression} < ? OR (${sortExpression} = ? AND i.id < ?))`,
+    );
+    values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+  }
+  values.push(limit + 1);
+
+  const rows = await all<ReviewIssueSummaryRow>(
+    [
+      'SELECT i.id, i.review_id AS reviewId, i.issue_key AS issueKey,',
+      'i.severity, i.title, i.related_revisions AS relatedRevisions,',
+      'i.status, i.status_note AS statusNote,',
+      'i.status_updated_at AS statusUpdatedAt,',
+      `${sortExpression} AS cursorUpdatedAt,`,
+      'i.source_current AS sourceCurrent, i.version,',
+      'l.log_date AS logDate, l.title AS reviewTitle,',
+      "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS authors",
+      'FROM review_issues i JOIN review_logs l ON l.id = i.review_id',
+      `WHERE ${where.join(' AND ')}`,
+      `ORDER BY ${sortExpression} DESC, i.id DESC`,
+      'LIMIT ?',
+    ].join(' '),
+    values,
+  );
+
+  return toPageResult(rows, limit);
+}
+
+function addReviewDateFilters(
+  where: string[],
+  values: SqlValue[],
+  filters: Pick<ReviewListFilters, 'fromDate' | 'toDate'>,
+): void {
+  if (filters.fromDate?.trim()) {
+    where.push('l.log_date >= ?');
+    values.push(filters.fromDate.trim());
+  }
+  if (filters.toDate?.trim()) {
+    where.push('l.log_date <= ?');
+    values.push(filters.toDate.trim());
+  }
+}
+
+function addReviewRevisionFilters(
+  where: string[],
+  values: SqlValue[],
+  filters: Pick<ReviewListFilters, 'author' | 'revision'>,
+): void {
+  const revisionWhere = ['r.review_id = l.id'];
+  if (filters.author?.trim()) {
+    revisionWhere.push("r.author LIKE ? ESCAPE '\\'");
+    values.push(toLikePattern(filters.author.trim()));
+  }
+  if (Number.isInteger(filters.revision)) {
+    revisionWhere.push('r.revision = ?');
+    values.push(filters.revision!);
+  }
+  if (revisionWhere.length > 1) {
+    where.push(
+      `EXISTS (SELECT 1 FROM review_revisions r WHERE ${revisionWhere.join(' AND ')})`,
+    );
+  }
+}
+
+function addReviewIssueFilters(
+  where: string[],
+  values: SqlValue[],
+  filters: Pick<ReviewListFilters, 'severity' | 'severities' | 'status'>,
+): void {
+  const issueWhere = ['i.review_id = l.id', 'i.source_current = 1'];
+  if (filters.severities?.length) {
+    issueWhere.push(`i.severity IN (${filters.severities.map(() => '?').join(',')})`);
+    values.push(...filters.severities);
+  } else if (filters.severity) {
+    issueWhere.push('i.severity = ?');
+    values.push(filters.severity);
+  }
+  if (filters.status) {
+    issueWhere.push('i.status = ?');
+    values.push(filters.status);
+  }
+  if (issueWhere.length > 2) {
+    where.push(
+      `EXISTS (SELECT 1 FROM review_issues i WHERE ${issueWhere.join(' AND ')})`,
+    );
+  }
+}
+
+function addReviewKeywordFilter(
+  where: string[],
+  values: SqlValue[],
+  keyword: string,
+  useLike: boolean,
+): void {
+  if (!keyword) return;
+  if (!useLike) {
+    where.push(
+      'l.id IN (SELECT review_id FROM review_search WHERE review_search MATCH ?)',
+    );
+    values.push(keyword);
+    return;
+  }
+
+  const pattern = toLikePattern(keyword);
+  where.push(
+    [
+      '(l.title LIKE ? ESCAPE \'\\\'',
+      'OR l.overview LIKE ? ESCAPE \'\\\'',
+      'OR l.scope_text LIKE ? ESCAPE \'\\\'',
+      'OR EXISTS (SELECT 1 FROM review_revisions r',
+      'WHERE r.review_id = l.id AND (r.author LIKE ? ESCAPE \'\\\'',
+      'OR r.description LIKE ? ESCAPE \'\\\'',
+      'OR CAST(r.revision AS TEXT) LIKE ? ESCAPE \'\\\'))',
+      'OR EXISTS (SELECT 1 FROM review_issues i',
+      'WHERE i.review_id = l.id AND (i.title LIKE ? ESCAPE \'\\\'',
+      'OR i.detail LIKE ? ESCAPE \'\\\'',
+      'OR COALESCE(i.status_note, \'\') LIKE ? ESCAPE \'\\\')))',
+    ].join(' '),
+  );
+  values.push(...Array<SqlValue>(9).fill(pattern));
+}
+
+function addIssueKeywordFilter(
+  where: string[],
+  values: SqlValue[],
+  keyword: string,
+  useLike: boolean,
+): void {
+  if (!keyword) return;
+  if (!useLike) {
+    where.push(
+      'l.id IN (SELECT review_id FROM review_search WHERE review_search MATCH ?)',
+    );
+    values.push(keyword);
+    return;
+  }
+
+  const pattern = toLikePattern(keyword);
+  where.push(
+    [
+      '(l.title LIKE ? ESCAPE \'\\\'',
+      'OR l.overview LIKE ? ESCAPE \'\\\'',
+      'OR l.scope_text LIKE ? ESCAPE \'\\\'',
+      'OR i.title LIKE ? ESCAPE \'\\\'',
+      'OR i.detail LIKE ? ESCAPE \'\\\'',
+      'OR i.related_revisions LIKE ? ESCAPE \'\\\'',
+      'OR COALESCE(i.status_note, \'\') LIKE ? ESCAPE \'\\\'',
+      'OR EXISTS (SELECT 1 FROM review_revisions r',
+      'WHERE r.review_id = l.id AND (r.author LIKE ? ESCAPE \'\\\'',
+      'OR r.description LIKE ? ESCAPE \'\\\'',
+      'OR CAST(r.revision AS TEXT) LIKE ? ESCAPE \'\\\')))',
+    ].join(' '),
+  );
+  values.push(...Array<SqlValue>(10).fill(pattern));
+}
+
+function toPageResult<
+  T extends { id: number; cursorUpdatedAt: string },
+>(rows: T[], limit: 20 | 50): PageResult<Omit<T, 'cursorUpdatedAt'>> {
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map(withoutCursorField);
+  const last = pageRows.at(-1);
+  return {
+    items,
+    hasMore,
+    nextCursor:
+      hasMore && last
+        ? encodePageCursor({ updatedAt: last.cursorUpdatedAt, id: last.id })
+        : null,
+  };
+}
+
+function withoutCursorField<T extends { cursorUpdatedAt: string }>(
+  row: T,
+): Omit<T, 'cursorUpdatedAt'> {
+  const item = { ...row } as Omit<T, 'cursorUpdatedAt'> & {
+    cursorUpdatedAt?: string;
+  };
+  delete item.cursorUpdatedAt;
+  return item;
+}
+
+function normalizeScope(scope: ReviewScope | undefined): ReviewScope {
+  if (scope === undefined) return 'active';
+  if (scope !== 'active' && scope !== 'archived') {
+    throw new Error('审查范围无效。');
+  }
+  return scope;
+}
+
+function normalizeRepositoryPageSize(value: unknown): 20 | 50 {
+  return Number(value) > 50 ? normalizePageSize(50) : normalizePageSize(value);
+}
+
+function toLikePattern(value: string): string {
+  return `%${value.replace(/([%_\\])/g, '\\$1')}%`;
+}
+
+function isFtsQueryError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = `${error.message} ${(error as Error & { cause?: unknown }).cause ?? ''}`.toLowerCase();
+  return (
+    message.includes('fts5') ||
+    message.includes('match') ||
+    message.includes('syntax') ||
+    message.includes('unterminated') ||
+    message.includes('malformed')
   );
 }
 
@@ -178,7 +1103,7 @@ export async function getReviewDetail(id: number): Promise<ReviewDetail | null> 
       'skipped_count AS skippedCount, p1_count AS p1Count,',
       'p2_count AS p2Count, p3_count AS p3Count,',
       'sync_mode AS syncMode, imported_at AS importedAt,',
-      'updated_at AS updatedAt',
+      'updated_at AS updatedAt, archived_at AS archivedAt',
       'FROM review_logs WHERE id = ?',
     ].join(' '),
     [id],
@@ -194,21 +1119,26 @@ export async function getReviewDetail(id: number): Promise<ReviewDetail | null> 
       ].join(' '),
       [id],
     ),
-    all<ParsedIssue>(
+    all<ParsedIssue & Pick<ReviewIssueSummary, 'id' | 'status' | 'statusNote' | 'statusUpdatedAt' | 'version'>>(
       [
-        'SELECT severity, title, related_revisions AS relatedRevisions, detail',
-        'FROM review_issues WHERE review_id = ?',
+        'SELECT id, severity, title, related_revisions AS relatedRevisions, detail, status, status_note AS statusNote, status_updated_at AS statusUpdatedAt, version',
+        'FROM review_issues WHERE review_id = ? AND source_current = 1',
         "ORDER BY CASE severity WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END, id",
       ].join(' '),
       [id],
     ),
     getRuntime().FILES.get(review.contentObjectKey),
   ]);
+  const events = issues.length ? await all<IssueEvent>(
+    `SELECT id, issue_id AS issueId, from_status AS fromStatus, to_status AS toStatus, note, created_at AS createdAt
+     FROM review_issue_events WHERE issue_id IN (${issues.map(() => '?').join(',')}) ORDER BY created_at DESC, id DESC`,
+    issues.map((issue) => issue.id),
+  ) : [];
 
   return {
     ...review,
     revisions,
-    issues,
+    issues: issues.map((issue) => ({ ...issue, events: events.filter((event) => event.issueId === issue.id) })),
     markdown: object ? await object.text() : '',
   };
 }
@@ -236,7 +1166,9 @@ type IngestInput = {
   syncMode: 'automation' | 'manual';
 };
 
-export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
+export async function ingestReview(
+  input: IngestInput,
+): Promise<ReviewIngestionResult> {
   const markdown = input.markdown.replace(/^\uFEFF/, '');
   if (!markdown.trim()) throw new Error('日志文件为空。');
   if (new TextEncoder().encode(markdown).byteLength > 2_000_000) {
@@ -272,115 +1204,133 @@ export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
     'SELECT id FROM review_logs WHERE source_key = ?',
     [sourceKey],
   );
-  let reviewId: number;
+  const existingIssues = existing
+    ? await all<IssueIdentityRow>(
+        `SELECT id, review_id AS reviewId, issue_key AS issueKey,
+                severity, title, related_revisions AS relatedRevisions
+         FROM review_issues
+         WHERE review_id = ? AND issue_key IS NOT NULL`,
+        [existing.id],
+      )
+    : [];
+  const existingIssueKeys = new Set(
+    existingIssues.map((issue) => issue.issueKey!),
+  );
+  const existingKeyByIdentity = new Map(
+    existingIssues.map((issue) => [issueStableKey(issue), issue.issueKey!]),
+  );
+  const issuesByKey = new Map<string, ParsedIssue>();
+  for (const issue of parsed.issues) {
+    const identity = issueStableKey(issue);
+    issuesByKey.set(existingKeyByIdentity.get(identity) ?? identity, issue);
+  }
+  const currentIssues = [...issuesByKey.entries()];
+  const createdIssueCount = currentIssues.filter(
+    ([issueKey]) => !existingIssueKeys.has(issueKey),
+  ).length;
+  const updatedIssueCount = currentIssues.length - createdIssueCount;
 
-  if (existing) {
-    reviewId = existing.id;
-    await DB.batch([
-      DB.prepare('DELETE FROM review_revisions WHERE review_id = ?').bind(reviewId),
-      DB.prepare('DELETE FROM review_issues WHERE review_id = ?').bind(reviewId),
-      DB.prepare(
-        [
-          'UPDATE review_logs SET log_date = ?, source_name = ?,',
-          'source_hash = ?, content_object_key = ?, title = ?, overview = ?,',
-          'scope_text = ?, revision_count = ?, reviewed_count = ?,',
-          'skipped_count = ?, p1_count = ?, p2_count = ?, p3_count = ?,',
-          'sync_mode = ?, imported_by = ?, updated_at = ? WHERE id = ?',
-        ].join(' '),
-      ).bind(
-        parsed.logDate,
-        sourceName,
-        sourceHash,
-        contentObjectKey,
-        parsed.title,
-        parsed.overview,
-        parsed.scopeText,
-        parsed.revisionCount,
-        parsed.reviewedCount,
-        parsed.skippedCount,
-        parsed.p1Count,
-        parsed.p2Count,
-        parsed.p3Count,
-        input.syncMode,
-        input.importedBy.slice(0, 255),
-        now,
-        reviewId,
-      ),
-    ]);
-  } else {
-    const result = await DB.prepare(
+  const statements: D1PreparedStatement[] = [
+    DB.prepare(
       [
         'INSERT INTO review_logs (',
         'log_date, source_key, source_name, source_hash, content_object_key,',
         'title, overview, scope_text, revision_count, reviewed_count, skipped_count,',
         'p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at, updated_at',
         ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'ON CONFLICT(source_key) DO UPDATE SET',
+        'log_date = excluded.log_date, source_name = excluded.source_name,',
+        'source_hash = excluded.source_hash, content_object_key = excluded.content_object_key,',
+        'title = excluded.title, overview = excluded.overview,',
+        'scope_text = excluded.scope_text, revision_count = excluded.revision_count,',
+        'reviewed_count = excluded.reviewed_count, skipped_count = excluded.skipped_count,',
+        'p1_count = excluded.p1_count, p2_count = excluded.p2_count,',
+        'p3_count = excluded.p3_count, sync_mode = excluded.sync_mode,',
+        'imported_by = excluded.imported_by, updated_at = excluded.updated_at',
       ].join(' '),
-    )
-      .bind(
-        parsed.logDate,
+    ).bind(
+      parsed.logDate,
+      sourceKey,
+      sourceName,
+      sourceHash,
+      contentObjectKey,
+      parsed.title,
+      parsed.overview,
+      parsed.scopeText,
+      parsed.revisionCount,
+      parsed.reviewedCount,
+      parsed.skippedCount,
+      parsed.p1Count,
+      parsed.p2Count,
+      parsed.p3Count,
+      input.syncMode,
+      input.importedBy.slice(0, 255),
+      now,
+      now,
+    ),
+    DB.prepare(
+      'DELETE FROM review_revisions WHERE review_id = (SELECT id FROM review_logs WHERE source_key = ?)',
+    ).bind(sourceKey),
+    DB.prepare(
+      'UPDATE review_issues SET source_current = 0 WHERE review_id = (SELECT id FROM review_logs WHERE source_key = ?)',
+    ).bind(sourceKey),
+    ...parsed.revisions.map((revision) =>
+      DB.prepare(
+        [
+          'INSERT INTO review_revisions (',
+          'review_id, revision, author, committed_at, description, conclusion',
+          ') SELECT id, ?, ?, ?, ?, ? FROM review_logs WHERE source_key = ?',
+        ].join(' '),
+      ).bind(
+        revision.revision,
+        revision.author,
+        revision.committedAt,
+        revision.description,
+        revision.conclusion,
         sourceKey,
-        sourceName,
-        sourceHash,
-        contentObjectKey,
-        parsed.title,
-        parsed.overview,
-        parsed.scopeText,
-        parsed.revisionCount,
-        parsed.reviewedCount,
-        parsed.skippedCount,
-        parsed.p1Count,
-        parsed.p2Count,
-        parsed.p3Count,
-        input.syncMode,
-        input.importedBy.slice(0, 255),
-        now,
-        now,
-      )
-      .run();
-    reviewId = Number(result.meta.last_row_id);
-  }
-
-  if (parsed.revisions.length) {
-    await DB.batch(
-      parsed.revisions.map((revision) =>
-        DB.prepare(
-          [
-            'INSERT INTO review_revisions (',
-            'review_id, revision, author, committed_at, description, conclusion',
-            ') VALUES (?, ?, ?, ?, ?, ?)',
-          ].join(' '),
-        ).bind(
-          reviewId,
-          revision.revision,
-          revision.author,
-          revision.committedAt,
-          revision.description,
-          revision.conclusion,
-        ),
       ),
+    ),
+    ...currentIssues.map(([issueKey, issue]) =>
+      DB.prepare(
+        [
+          'INSERT INTO review_issues (',
+          'review_id, issue_key, severity, title, related_revisions, detail,',
+          'status, status_note, status_updated_at, source_current, version',
+          ") SELECT id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
+          'FROM review_logs WHERE source_key = ?',
+          'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
+          'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
+          'related_revisions = excluded.related_revisions, detail = excluded.detail,',
+          'source_current = 1',
+        ].join(' '),
+      ).bind(
+        issueKey,
+        issue.severity,
+        issue.title,
+        issue.relatedRevisions,
+        issue.detail,
+        sourceKey,
+      ),
+    ),
+  ];
+
+  try {
+    await DB.batch(statements);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `D1 原子更新失败，未提交部分结构化变更：${message}`,
+      { cause: error },
     );
   }
 
-  if (parsed.issues.length) {
-    await DB.batch(
-      parsed.issues.map((issue) =>
-        DB.prepare(
-          [
-            'INSERT INTO review_issues (',
-            'review_id, severity, title, related_revisions, detail',
-            ') VALUES (?, ?, ?, ?, ?)',
-          ].join(' '),
-        ).bind(
-          reviewId,
-          issue.severity,
-          issue.title,
-          issue.relatedRevisions,
-          issue.detail,
-        ),
-      ),
-    );
-  }
+  const identity = await first<{ id: number }>(
+    'SELECT id FROM review_logs WHERE source_key = ?',
+    [sourceKey],
+  );
+  if (!identity) throw new Error('日志已写入，但未能读取导入标识。');
+  const reviewId = identity.id;
+  await rebuildReviewSearch(reviewId);
 
   const review = await first<ReviewSummary>(
     [
@@ -390,13 +1340,33 @@ export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
       'skipped_count AS skippedCount, p1_count AS p1Count,',
       'p2_count AS p2Count, p3_count AS p3Count,',
       'sync_mode AS syncMode, imported_at AS importedAt,',
-      'updated_at AS updatedAt',
+      'updated_at AS updatedAt, archived_at AS archivedAt',
       'FROM review_logs WHERE id = ?',
     ].join(' '),
     [reviewId],
   );
   if (!review) throw new Error('日志已写入，但未能读取导入结果。');
-  return review;
+  return {
+    ...normalizeReviewCounts(review),
+    ingestion: {
+      createdIssueCount,
+      updatedIssueCount,
+      parsedIssueCount: currentIssues.length,
+    },
+  };
+}
+
+function normalizeReviewCounts<T extends Pick<ReviewSummary, 'scopeText' | 'revisionCount' | 'reviewedCount' | 'skippedCount'>>(review: T): T {
+  if (review.revisionCount || review.reviewedCount || review.skippedCount || !review.scopeText) return review;
+  return { ...review, ...parseReviewScopeCounts(review.scopeText) };
+}
+
+function issueStableKey(
+  issue: { severity: string; title: string; relatedRevisions: string },
+): string {
+  return normalizeIssueKey(
+    `${issue.severity.toUpperCase()}:${issue.title}:${normalizeRelatedRevisions(issue.relatedRevisions)}`,
+  );
 }
 
 export async function allowAdministrator(user: ChatGPTUser): Promise<boolean> {

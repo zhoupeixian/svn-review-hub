@@ -46,9 +46,7 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
     title,
     overview,
     scopeText,
-    revisionCount: countFrom(scopeText, /共\s*(\d+)\s*个\s*revision/i),
-    reviewedCount: countFrom(scopeText, /实际审查\s*(\d+)\s*个/i),
-    skippedCount: countFrom(scopeText, /跳过\s*(\d+)\s*个/i),
+    ...parseReviewScopeCounts(scopeText),
     p1Count: countSeverity(markdown, 'P1'),
     p2Count: countSeverity(markdown, 'P2'),
     p3Count: countSeverity(markdown, 'P3'),
@@ -62,7 +60,20 @@ function lineValue(lines: string[], label: string): string {
 }
 
 function countFrom(value: string, pattern: RegExp): number {
-  return Number(value.match(pattern)?.[1] ?? 0);
+  return Number(value.match(pattern)?.slice(1).find(Boolean) ?? 0);
+}
+
+export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> {
+  return {
+    revisionCount: countFrom(scopeText, /共\s*(\d+)\s*个\s*revision/i),
+    reviewedCount:
+      countFrom(scopeText, /实际审查\s*(\d+)\s*个/i) ||
+      countFrom(scopeText, /(\d+)\s*个\s*可审查/i),
+    skippedCount: countFrom(
+      scopeText,
+      /跳过\s*(\d+)\s*个|(\d+)\s*个[^，。]*跳过/i,
+    ),
+  };
 }
 
 function countSeverity(markdown: string, severity: 'P1' | 'P2' | 'P3'): number {
@@ -104,12 +115,12 @@ function parseRevisionTable(lines: string[]): ParsedRevision[] {
 }
 
 function parseIssues(markdown: string): ParsedIssue[] {
-  const sections = [...markdown.matchAll(/^###\s+(P[123])\s*$/gm)];
+  const sections = [...markdown.matchAll(/^###\s+(P[123])\s*$/gim)];
   const issues: ParsedIssue[] = [];
 
   for (let index = 0; index < sections.length; index += 1) {
     const section = sections[index];
-    const severity = section[1] as ParsedIssue['severity'];
+    const severity = section[1].toUpperCase() as ParsedIssue['severity'];
     const start = (section.index ?? 0) + section[0].length;
     const nextStart =
       index + 1 < sections.length
@@ -121,10 +132,9 @@ function parseIssues(markdown: string): ParsedIssue[] {
     for (const entry of entries) {
       const [titleLine = '', ...detailLines] = entry.split('\n');
       const detail = detailLines.join('\n').trim();
-      const revisions =
-        detail.match(/相关 revision：\s*([0-9、，,\s]+)/)?.[1]
-          .replace(/\s+/g, '')
-          .replace(/，/g, '、') ?? '';
+      const revisions = normalizeRelatedRevisions(
+        detail.match(/相关 revision：\s*([0-9、，,\s]+)/i)?.[1] ?? '',
+      );
 
       if (titleLine.trim()) {
         issues.push({
@@ -138,4 +148,11 @@ function parseIssues(markdown: string): ParsedIssue[] {
   }
 
   return issues;
+}
+
+export function normalizeRelatedRevisions(value: string): string {
+  const revisions = [...new Set(value.match(/\d+/g) ?? [])];
+  return revisions
+    .sort((left, right) => Number(left) - Number(right))
+    .join('、');
 }

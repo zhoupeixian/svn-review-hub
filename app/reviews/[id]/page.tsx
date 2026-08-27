@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getReviewDetail } from '@/lib/reviews';
+import IssueStatusPanel from '@/app/components/issue-status-panel';
 
 export const dynamic = 'force-dynamic';
 
@@ -92,7 +93,8 @@ export default async function ReviewPage({ params }: Props) {
               {review.issues.map((issue, index) => (
                 <article
                   key={issue.severity + issue.title + index}
-                  className="rounded-2xl border border-[#dfe7df] bg-white p-5"
+                  id={'issue-' + issue.id}
+                  className="issue-card"
                 >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
@@ -102,14 +104,15 @@ export default async function ReviewPage({ params }: Props) {
                       <h3 className="mt-3 text-base font-bold text-[#223c30]">{issue.title}</h3>
                     </div>
                     {issue.relatedRevisions && (
-                      <span className="rounded-full bg-[#eef4ef] px-3 py-1.5 text-xs font-semibold text-[#526c5c]">
+                      <span className="meta-chip">
                         r{issue.relatedRevisions.split('、').join(' · r')}
                       </span>
                     )}
                   </div>
-                  <p className="mt-4 whitespace-pre-line text-sm leading-6 text-[#607167]">
+                  <p className="mt-4 max-w-4xl whitespace-pre-line text-sm leading-7 text-[#607167]">
                     {issue.detail}
                   </p>
+                  <IssueStatusPanel issue={issue} readOnly={review.archivedAt !== null} />
                 </article>
               ))}
             </div>

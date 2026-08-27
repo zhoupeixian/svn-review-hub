@@ -26,8 +26,17 @@ if (!portalUrl || !syncKey) {
     let failed = 0;
     for (const file of files) {
       try {
-        await uploadReview(file, logRoot, portalUrl, syncKey, dispatchToken);
-        console.log('已同步：' + path.basename(file));
+        const ingestion = await uploadReview(
+          file,
+          logRoot,
+          portalUrl,
+          syncKey,
+          dispatchToken,
+        );
+        const summary = ingestion
+          ? `（解析 ${ingestion.parsedIssueCount}，新建 ${ingestion.createdIssueCount}，更新 ${ingestion.updatedIssueCount}）`
+          : '';
+        console.log('已同步：' + path.basename(file) + summary);
       } catch (error) {
         failed += 1;
         const message = error instanceof Error ? error.message : '未知错误';
@@ -118,4 +127,13 @@ async function uploadReview(file, root, baseUrl, key, serviceToken) {
     const body = await response.text();
     throw new Error('服务返回 ' + response.status + '：' + body.slice(0, 240));
   }
+
+  const body = await response.json();
+  const ingestion = body?.review?.ingestion;
+  return ingestion &&
+    Number.isInteger(ingestion.createdIssueCount) &&
+    Number.isInteger(ingestion.updatedIssueCount) &&
+    Number.isInteger(ingestion.parsedIssueCount)
+    ? ingestion
+    : null;
 }

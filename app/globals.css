@@ -1,8 +1,54 @@
 @import 'tailwindcss';
 
 :root {
-  --background: #f6f7f3;
-  --foreground: #17211d;
+  --background: #f5f5f2;
+  --foreground: #202524;
+  --page: #f5f5f2;
+  --surface: #ffffff;
+  --surface-muted: #f0f2ef;
+  --border: #d8ddda;
+  --text: #202524;
+  --text-muted: #64706b;
+  --accent: #395c77;
+  --accent-contrast: #ffffff;
+  --focus: #4f7b9b;
+  --risk-p1: #be4d46;
+  --risk-p2: #a36a1d;
+  --risk-p3: #436f9d;
+}
+
+[data-theme='green'] {
+  --background: #f4f7f3;
+  --foreground: #172b21;
+  --page: #f4f7f3;
+  --surface: #ffffff;
+  --surface-muted: #edf4ee;
+  --border: #cfddd1;
+  --text: #172b21;
+  --text-muted: #617367;
+  --accent: #1d5b46;
+  --accent-contrast: #ffffff;
+  --focus: #367858;
+  --risk-p1: #bc463e;
+  --risk-p2: #98631b;
+  --risk-p3: #3f709b;
+}
+
+[data-theme='night'] {
+  --background: #18201e;
+  --foreground: #e8eeea;
+  --page: #18201e;
+  --surface: #24302c;
+  --surface-muted: #2c3934;
+  --border: #435249;
+  --text: #e8eeea;
+  --text-muted: #bac8c0;
+  --accent: #77a98b;
+  --accent-contrast: #13201a;
+  --focus: #9ccab2;
+  --risk-p1: #ff968c;
+  --risk-p2: #f4c976;
+  --risk-p3: #9cc9ef;
 }
 
 @theme inline {
@@ -16,6 +62,101 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+main {
+  background: var(--page) !important;
+  color: var(--text);
+}
+
+[data-theme='night'] main :is(h1, h2, h3, h4, p, span, strong, a, label, time, li, article) {
+  color: var(--text);
+}
+
+[data-theme='night'] main :is(input, select, textarea, button) {
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+[data-theme='night'] main [class*='bg-white'],
+[data-theme='night'] main [class*='bg-[#f'] {
+  background: var(--surface) !important;
+}
+
+[data-theme='night'] main [class*='border-[#'] {
+  border-color: var(--border) !important;
+}
+
+.theme-switcher {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgb(23 33 29 / 18%);
+  color: var(--text-muted);
+  padding: 0.35rem 0.4rem 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.theme-switcher-options { display: flex; gap: 0.2rem; }
+.theme-switcher button {
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.38rem 0.62rem;
+}
+.theme-switcher button[aria-pressed='true'] { background: var(--accent); color: var(--accent-contrast); }
+.theme-switcher button:focus-visible,
+.filter-panel :is(input, select, button):focus-visible,
+.status-panel :is(input, select, button):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.filter-panel {
+  border: 1px solid var(--border);
+  border-radius: 1.15rem;
+  background: var(--surface);
+  padding: 1rem;
+  box-shadow: 0 10px 26px rgb(30 42 36 / 5%);
+}
+.filter-panel label { display: grid; gap: 0.38rem; color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
+.filter-panel input, .filter-panel select, .status-panel input, .status-panel select {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--surface-muted);
+  color: var(--text);
+  padding: 0.64rem 0.72rem;
+  font: inherit;
+}
+.filter-apply, .filter-quiet { display: inline-flex; align-items: center; justify-content: center; border-radius: 0.65rem; padding: 0.64rem 0.85rem; font-size: 0.84rem; font-weight: 700; line-height: 1.2; }
+.filter-apply { background: var(--accent); color: var(--accent-contrast); }
+.filter-quiet { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.meta-chip { display: inline-flex; align-items: center; gap: 0.25rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-muted); color: var(--text-muted); padding: 0.24rem 0.55rem; font-size: 0.75rem; font-weight: 700; }
+.issue-card { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1rem; box-shadow: 0 7px 20px rgb(30 42 36 / 4%); }
+.status-panel { border: 1px solid var(--border); border-radius: 0.85rem; background: var(--surface-muted); padding: 0.9rem; }
+.home-quick-search { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1.1rem; box-shadow: 0 8px 24px rgb(30 42 36 / 4%); }
+.home-quick-search label { display: grid; gap: 0.38rem; color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
+.home-quick-search input { min-width: 0; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--surface-muted); color: var(--text); padding: 0.62rem 0.72rem; font-size: 0.9rem; }
+.home-quick-search .filter-apply { min-height: 2.65rem; padding-inline: 1rem; }
+.share-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; border: 1px solid var(--border); border-radius: 0.85rem; background: var(--surface-muted); padding: 0.85rem 1rem; }
+.archive-filter-panel { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface-muted); padding: 1rem; }
+.archive-filter-panel label { display: grid; gap: 0.38rem; color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
+.archive-filter-panel input, .archive-filter-panel select { min-width: 0; border: 1px solid var(--border); border-radius: 0.65rem; background: var(--surface); color: var(--text); padding: 0.64rem 0.72rem; font: inherit; }
+.stat-card { display: block; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.stat-card:hover { border-color: var(--accent); box-shadow: 0 9px 22px rgb(30 42 36 / 8%); transform: translateY(-2px); }
+
+@media (max-width: 640px) {
+  .theme-switcher { left: 0.75rem; right: 0.75rem; justify-content: space-between; }
+  .theme-switcher-options { flex: 1; justify-content: flex-end; }
+  .theme-switcher button { padding-inline: 0.45rem; }
 }
 
 ::selection {

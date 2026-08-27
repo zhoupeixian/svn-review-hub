@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   index,
   integer,
@@ -5,6 +6,7 @@ import {
   text,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
+import { ISSUE_STATUSES } from '../lib/issue-lifecycle';
 
 export const reviewLogs = sqliteTable(
   'review_logs',
@@ -28,11 +30,17 @@ export const reviewLogs = sqliteTable(
     importedBy: text('imported_by').notNull(),
     importedAt: text('imported_at').notNull(),
     updatedAt: text('updated_at').notNull(),
+    archivedAt: text('archived_at'),
   },
   (table) => [
     uniqueIndex('idx_review_logs_source_key').on(table.sourceKey),
     index('idx_review_logs_log_date').on(table.logDate),
     index('idx_review_logs_severity').on(table.p1Count, table.p2Count),
+    index('idx_review_logs_archive_date_id').on(
+      table.archivedAt,
+      table.logDate,
+      table.id,
+    ),
   ],
 );
 
@@ -40,7 +48,9 @@ export const reviewRevisions = sqliteTable(
   'review_revisions',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
-    reviewId: integer('review_id').notNull(),
+    reviewId: integer('review_id')
+      .notNull()
+      .references(() => reviewLogs.id, { onDelete: 'cascade' }),
     revision: integer('revision').notNull(),
     author: text('author').notNull(),
     committedAt: text('committed_at').notNull(),
@@ -61,15 +71,31 @@ export const reviewIssues = sqliteTable(
   'review_issues',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
-    reviewId: integer('review_id').notNull(),
+    reviewId: integer('review_id')
+      .notNull()
+      .references(() => reviewLogs.id, { onDelete: 'cascade' }),
+    issueKey: text('issue_key'),
     severity: text('severity').notNull(),
     title: text('title').notNull(),
     relatedRevisions: text('related_revisions').notNull(),
     detail: text('detail').notNull(),
+    status: text('status').notNull().default(ISSUE_STATUSES[0]),
+    statusNote: text('status_note'),
+    statusUpdatedAt: text('status_updated_at'),
+    sourceCurrent: integer('source_current').notNull().default(1),
+    version: integer('version').notNull().default(0),
   },
   (table) => [
     index('idx_review_issues_review_id').on(table.reviewId),
     index('idx_review_issues_severity').on(table.severity),
+    index('idx_review_issues_status_current_review').on(
+      table.status,
+      table.sourceCurrent,
+      table.reviewId,
+    ),
+    uniqueIndex('idx_review_issues_review_issue_key')
+      .on(table.reviewId, table.issueKey)
+      .where(sql`${table.issueKey} IS NOT NULL`),
   ],
 );
 
@@ -79,3 +105,45 @@ export const adminUsers = sqliteTable('admin_users', {
   displayName: text('display_name').notNull(),
   createdAt: text('created_at').notNull(),
 });
+
+export const reviewIssueEvents = sqliteTable(
+  'review_issue_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    issueId: integer('issue_id')
+      .notNull()
+      .references(() => reviewIssues.id, { onDelete: 'cascade' }),
+    fromStatus: text('from_status'),
+    toStatus: text('to_status').notNull(),
+    note: text('note').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_review_issue_events_issue_created').on(
+      table.issueId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const anonymousUpdateLimits = sqliteTable('anonymous_update_limits', {
+  clientHash: text('client_hash').primaryKey(),
+  windowStartedAt: text('window_started_at').notNull(),
+  requestCount: integer('request_count').notNull(),
+});
+
+export const archiveOperationPreviews = sqliteTable(
+  'archive_operation_previews',
+  {
+    token: text('token').primaryKey(),
+    adminUserId: text('admin_user_id')
+      .notNull()
+      .references(() => adminUsers.userId, { onDelete: 'cascade' }),
+    reviewIdsJson: text('review_ids_json').notNull(),
+    reviewCount: integer('review_count').notNull(),
+    revisionCount: integer('revision_count').notNull(),
+    issueCount: integer('issue_count').notNull(),
+    createdAt: text('created_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+  },
+);

@@ -1,0 +1,180 @@
+/// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import ReviewExplorer from '../app/review-explorer';
+import IssueExplorer from '../app/issues/issue-explorer';
+import IssueStatusPanel from '../app/components/issue-status-panel';
+import ThemeSwitcher from '../app/components/theme-switcher';
+import HomeQuickSearch from '../app/components/home-quick-search';
+
+const review = {
+  id: 1, logDate: '2026-08-27', title: '当前日志', overview: '摘要', scopeText: '',
+  sourceName: 'review.md', revisionCount: 1, reviewedCount: 1, skippedCount: 0,
+  p1Count: 1, p2Count: 0, p3Count: 0, syncMode: 'automation', importedAt: '', updatedAt: '', archivedAt: null,
+};
+
+const issue = {
+  id: 42, reviewId: 1, issueKey: 'issue-42', severity: 'P1' as const, title: '权限问题', relatedRevisions: '100',
+  status: 'open' as const, statusNote: null, statusUpdatedAt: null, sourceCurrent: 1, version: 0,
+  logDate: '2026-08-27', reviewTitle: '当前日志', authors: 'alice',
+};
+
+describe('当前审查协作 UI', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    cleanup();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('首页加载更多追加 API 返回的下一页', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({ items: [{ ...review, id: 2, logDate: '2026-08-26' }], nextCursor: null, hasMore: false }), { status: 200 }));
+    render(<ReviewExplorer initialItems={[review]} initialCursor="next" initialHasMore />);
+    await userEvent.click(screen.getByRole('button', { name: '加载更多日志' }));
+    expect(await screen.findByText('2026-08-26')).toBeTruthy();
+    expect(fetch).toHaveBeenCalledWith('/api/reviews?scope=active&cursor=next');
+  });
+
+  it('问题卡片带数据库锚点和当前筛选链接', () => {
+    window.history.pushState({}, '', '/issues?status=open&severity=P1');
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+    expect(document.getElementById('issue-42')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/reviews/1#issue-42');
+    expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('status=open&severity=P1');
+  });
+
+  it('主题切换保存并恢复本机偏好', async () => {
+    render(<ThemeSwitcher />);
+    await userEvent.click(screen.getByRole('button', { name: '夜间专注' }));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('night'));
+    expect(window.localStorage.getItem('review-portal-theme')).toBe('night');
+
+    cleanup();
+    document.documentElement.dataset.theme = '';
+    render(<ThemeSwitcher />);
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('night'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '夜间专注' }).getAttribute('aria-pressed')).toBe('true'));
+  });
+
+  it('主页快捷查询用原生 GET 将关键词、Revision 和日期带到问题看板', () => {
+    render(<HomeQuickSearch />);
+    const form = screen.getByRole('search');
+    expect(form.getAttribute('action')).toBe('/issues');
+    expect(form.getAttribute('method')).toBe('get');
+    expect(screen.getByLabelText('快捷关键词').getAttribute('name')).toBe('q');
+    expect(screen.getByLabelText('快捷 Revision').getAttribute('name')).toBe('revision');
+    expect(screen.getByLabelText('快捷日期').getAttribute('name')).toBe('from');
+  });
+
+  it('问题筛选将次要条件收入更多条件，并可重置为默认范围', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [issue], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+
+    expect(screen.queryByLabelText('按作者筛选')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
+    fireEvent.change(screen.getByLabelText('按作者筛选'), { target: { value: 'alice' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('author=alice');
+
+    await userEvent.click(screen.getByRole('button', { name: '重置' }));
+    expect((screen.getByLabelText('按作者筛选') as HTMLInputElement).value).toBe('');
+    expect(window.location.search).toBe('');
+    expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain('author=');
+  });
+
+  it('P1 + P2 联合筛选保留两个严重级别到查询与 Excel 导出', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [issue], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+
+    await userEvent.selectOptions(screen.getByLabelText('按严重级别筛选'), 'P1,P2');
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('severity=P1&severity=P2');
+    expect(screen.getByRole('link', { name: '导出 Excel 跟进表' }).getAttribute('href')).toContain('severity=P1&severity=P2');
+  });
+
+  it('切换问题筛选后重置分页，并只追加新筛选的后续页', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{ ...issue, id: 43, title: '已解决问题', status: 'resolved' }],
+        nextCursor: 'resolved-next', hasMore: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{ ...issue, id: 44, title: '已解决问题下一页', status: 'resolved' }],
+        nextCursor: null, hasMore: false,
+      }), { status: 200 }));
+    render(<IssueExplorer initialItems={[issue]} initialCursor="open-next" initialHasMore />);
+
+    await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), 'resolved');
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(await screen.findByText(/已解决问题/)).toBeTruthy();
+    expect(screen.queryByText(/权限问题/)).toBeNull();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('status=resolved');
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('cursor=');
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更多问题' }));
+    expect(await screen.findByText(/已解决问题下一页/)).toBeTruthy();
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('status=resolved');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('cursor=resolved-next');
+    expect(screen.queryByText(/权限问题/)).toBeNull();
+  });
+
+  it('日期和 Revision 筛选可见，刷新首屏并让加载更多沿用全部参数', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock.mockImplementation((input) => Promise.resolve(new Response(JSON.stringify({ items: [input.toString().includes('cursor=') ? { ...issue, id: 46, title: '日期版本下一页' } : { ...issue, id: 45, title: '日期版本问题' }], nextCursor: input.toString().includes('cursor=') ? null : 'filtered-next', hasMore: !input.toString().includes('cursor=') }), { status: 200 })));
+    render(<IssueExplorer initialItems={[issue]} initialCursor="old-next" initialHasMore />);
+
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
+    fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });
+    fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-08-27' } });
+    fireEvent.change(screen.getByLabelText('按 Revision 筛选'), { target: { value: '53365' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(await screen.findByText(/日期版本问题/)).toBeTruthy();
+    expect(screen.queryByText('权限问题')).toBeNull();
+    expect(window.location.search).toContain('from=2026-08-01');
+    expect(window.location.search).toContain('to=2026-08-27');
+    expect(window.location.search).toContain('revision=53365');
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('fromDate=2026-08-01');
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('toDate=2026-08-27');
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('revision=53365');
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更多问题' }));
+    expect(await screen.findByText(/日期版本下一页/)).toBeTruthy();
+    const nextUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+    expect(nextUrl).toContain('fromDate=2026-08-01');
+    expect(nextUrl).toContain('toDate=2026-08-27');
+    expect(nextUrl).toContain('revision=53365');
+    expect(nextUrl).toContain('cursor=filtered-next');
+    expect(screen.queryByText('权限问题')).toBeNull();
+  });
+
+  it('只读状态面板仍显示处理信息，但不提供保存操作', () => {
+    render(<IssueStatusPanel issue={{ ...issue, statusNote: '已归档说明' }} readOnly />);
+    expect(screen.getByText('当前状态：待处理')).toBeTruthy();
+    expect(screen.getByText('处理说明：已归档说明')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '保存状态' })).toBeNull();
+  });
+
+  it('状态更新成功显示新状态，409 保留说明', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, status: 'resolved', statusNote: '已修复', statusUpdatedAt: '2026-08-27T12:00:00.000Z', version: 1 }), { status: 200 }));
+    render(<IssueStatusPanel issue={{ ...issue }} />);
+    const note = screen.getByLabelText('处理说明');
+    await userEvent.type(note, '已修复');
+    await userEvent.click(screen.getByRole('button', { name: '保存状态' }));
+    expect(await screen.findByText('状态已更新。')).toBeTruthy();
+    expect(screen.getByText('处理说明：已修复')).toBeTruthy();
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: '问题版本已变化，请刷新后重试。', currentVersion: 2 }), { status: 409 }));
+    await userEvent.clear(note);
+    await userEvent.type(note, '保留这段说明');
+    await userEvent.click(screen.getByRole('button', { name: '保存状态' }));
+    await waitFor(() => expect(screen.getByDisplayValue('保留这段说明')).toBeTruthy());
+    expect(screen.getByRole('alert').textContent).toContain('问题版本已变化');
+  });
+});
