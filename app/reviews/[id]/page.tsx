@@ -19,6 +19,16 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title: review.logDate + ' · ZHERP SVN 审查日志',
     description: review.overview || 'ZHERP SVN 提交审查日志。',
+    openGraph: {
+      title: review.logDate + ' · ZHERP SVN 审查日志',
+      description: review.overview || 'ZHERP SVN 提交审查日志。',
+      images: [],
+    },
+    twitter: {
+      title: review.logDate + ' · ZHERP SVN 审查日志',
+      description: review.overview || 'ZHERP SVN 提交审查日志。',
+      images: [],
+    },
   };
 }
 
