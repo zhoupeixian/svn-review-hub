@@ -46,14 +46,14 @@ describe('当前审查协作 UI', () => {
   it('主题切换保存并恢复本机偏好', async () => {
     render(<ThemeSwitcher />);
     await userEvent.click(screen.getByRole('button', { name: '夜间专注' }));
-    expect(document.documentElement.dataset.theme).toBe('night');
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('night'));
     expect(window.localStorage.getItem('review-portal-theme')).toBe('night');
 
     cleanup();
     document.documentElement.dataset.theme = '';
     render(<ThemeSwitcher />);
-    expect(document.documentElement.dataset.theme).toBe('night');
-    expect(screen.getByRole('button', { name: '夜间专注' }).getAttribute('aria-pressed')).toBe('true');
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('night'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '夜间专注' }).getAttribute('aria-pressed')).toBe('true'));
   });
 
   it('主页快捷查询用原生 GET 将关键词、Revision 和日期带到问题看板', () => {

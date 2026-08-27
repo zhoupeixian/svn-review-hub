@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import PagedLoadMore from '../components/paged-load-more';
 import type { PageResult, ReviewIssueSummary } from '../../lib/reviews';
-import { ISSUE_STATUS_LABELS, ISSUE_STATUSES, type IssueStatus } from '../../lib/issue-lifecycle';
+import { ISSUE_STATUS_LABELS, ISSUE_STATUSES } from '../../lib/issue-lifecycle';
 
 type Props = { initialItems: ReviewIssueSummary[]; initialCursor: string | null; initialHasMore: boolean };
 

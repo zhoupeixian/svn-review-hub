@@ -21,9 +21,11 @@ export default function ThemeSwitcher() {
   useEffect(() => {
     const saved = window.localStorage.getItem('review-portal-theme');
     const next = themes.some((item) => item.value === saved) ? saved as Theme : 'office';
-    setTheme(next);
     applyTheme(next);
-  }, []);
+    if (next === theme) return;
+    const timer = window.setTimeout(() => setTheme(next), 0);
+    return () => window.clearTimeout(timer);
+  }, [theme]);
 
   return (
     <div className="theme-switcher" aria-label="界面主题">
