@@ -36,16 +36,17 @@ export default function ArchiveExplorer({
   const [copied, setCopied] = useState(false);
   const [activeFilters, setActiveFilters] = useState<ArchiveFilters>(() => ({ ...filters }));
   const [draftFilters, setDraftFilters] = useState<ArchiveFilters>(() => ({ ...filters }));
+  const [advanced, setAdvanced] = useState(() => Boolean(filters.author || filters.revision || filters.fromDate || filters.toDate));
   const requestId = useRef(0);
 
   function updateDraft(key: keyof ArchiveFilters, value: string) {
     setDraftFilters((current) => ({ ...current, [key]: value }));
   }
 
-  async function applyFilters() {
-    const next = Object.fromEntries(Object.entries(draftFilters).filter(([, value]) => value)) as ArchiveFilters;
+  async function applyFilters(nextFilters = draftFilters) {
+    const next = Object.fromEntries(Object.entries(nextFilters).filter(([, value]) => value)) as ArchiveFilters;
     const request = ++requestId.current;
-    setActiveFilters(next);
+    setActiveFilters(next); setDraftFilters(next);
     const urlParams = new URLSearchParams({ scope: 'archived' });
     appendFilters(urlParams, next);
     window.history.replaceState({}, '', `/archive?${urlParams.toString()}`);
@@ -92,8 +93,20 @@ export default function ArchiveExplorer({
 
   return (
     <section className="mt-8">
-      <div className="mb-5 grid gap-3 rounded-2xl border border-[#d9e4da] bg-[#f8fbf8] p-4 md:grid-cols-4"><label>开始日期<input type="date" aria-label="开始日期" value={draftFilters.fromDate ?? ''} onChange={(e) => updateDraft('fromDate', e.target.value)} /></label><label>结束日期<input type="date" aria-label="结束日期" value={draftFilters.toDate ?? ''} onChange={(e) => updateDraft('toDate', e.target.value)} /></label><label>严重级别<select aria-label="按严重级别筛选" value={draftFilters.severity ?? ''} onChange={(e) => updateDraft('severity', e.target.value)}><option value="">全部级别</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option></select></label><label>问题状态<select aria-label="按问题状态筛选" value={draftFilters.status ?? ''} onChange={(e) => updateDraft('status', e.target.value)}><option value="">全部状态</option>{ISSUE_STATUSES.map((status) => <option key={status} value={status}>{ISSUE_STATUS_LABELS[status]}</option>)}</select></label><label>Revision<input aria-label="按 Revision 筛选" value={draftFilters.revision ?? ''} onChange={(e) => updateDraft('revision', e.target.value)} /></label><label>提交人<input aria-label="按提交人筛选" value={draftFilters.author ?? ''} onChange={(e) => updateDraft('author', e.target.value)} /></label><label>关键词<input aria-label="搜索归档日志" value={draftFilters.keyword ?? ''} onChange={(e) => updateDraft('keyword', e.target.value)} /></label><button type="button" onClick={applyFilters}>应用筛选</button></div><div className="mb-5 flex flex-wrap items-end gap-3"><label className="min-w-[18rem] flex-1">当前筛选链接<input readOnly aria-label="当前筛选链接" value={share} /></label><button type="button" onClick={copyShareLink} className="rounded-lg border border-[#b9cbbb] bg-white px-3 py-2 text-sm font-bold text-[#1d5b46]">{copied ? '已复制' : '复制当前筛选链接'}</button><a href={exportHref} className="rounded-lg bg-[#1d5b46] px-3 py-2 text-sm font-bold text-white">导出当前筛选</a></div>
-      <p className="mb-4 text-xs text-[#718077]">导出最多包含 1000 条归档日志。</p>
+      <div className="filter-panel mb-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><p className="text-sm font-black text-[#243e31]">查找归档日志</p><p className="mt-1 text-xs text-[#718077]">先按问题内容、风险和处理状态缩小范围。</p></div>
+          <button type="button" className="filter-quiet" onClick={() => setAdvanced((value) => !value)}>{advanced ? '收起条件' : '更多条件'}</button>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <label>关键词<input aria-label="搜索归档日志" placeholder="标题、摘要或问题内容" value={draftFilters.keyword ?? ''} onChange={(e) => updateDraft('keyword', e.target.value)} /></label>
+          <label>严重级别<select aria-label="按严重级别筛选" value={draftFilters.severity ?? ''} onChange={(e) => updateDraft('severity', e.target.value)}><option value="">全部级别</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option></select></label>
+          <label>问题状态<select aria-label="按问题状态筛选" value={draftFilters.status ?? ''} onChange={(e) => updateDraft('status', e.target.value)}><option value="">全部状态</option>{ISSUE_STATUSES.map((status) => <option key={status} value={status}>{ISSUE_STATUS_LABELS[status]}</option>)}</select></label>
+        </div>
+        {advanced && <div className="mt-3 grid gap-3 md:grid-cols-4"><label>开始日期<input type="date" aria-label="开始日期" value={draftFilters.fromDate ?? ''} onChange={(e) => updateDraft('fromDate', e.target.value)} /></label><label>结束日期<input type="date" aria-label="结束日期" value={draftFilters.toDate ?? ''} onChange={(e) => updateDraft('toDate', e.target.value)} /></label><label>Revision<input inputMode="numeric" aria-label="按 Revision 筛选" value={draftFilters.revision ?? ''} onChange={(e) => updateDraft('revision', e.target.value)} /></label><label>提交人<input aria-label="按提交人筛选" value={draftFilters.author ?? ''} onChange={(e) => updateDraft('author', e.target.value)} /></label></div>}
+        <div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" className="filter-apply" onClick={() => applyFilters()}>应用筛选</button><button type="button" className="filter-quiet" onClick={() => applyFilters({})}>重置</button><span className="text-xs text-[#718077]">导出最多包含 1,000 份归档日志。</span></div>
+      </div>
+      <div className="mb-5 flex flex-wrap items-end gap-3"><label className="min-w-[18rem] flex-1 text-xs font-bold text-[#718077]">当前筛选链接<input readOnly aria-label="当前筛选链接" value={share} /></label><button type="button" onClick={copyShareLink} className="filter-quiet">{copied ? '已复制' : '复制当前筛选链接'}</button><a href={exportHref} className="filter-apply rounded-lg px-3 py-2 text-sm font-bold">导出归档清单</a></div>
       <div className="grid gap-4">
         {items.map((review) => (
           <article key={review.id} aria-label={review.title} className="rounded-2xl border border-[#dfe7df] bg-white p-5 sm:p-6">

@@ -75,6 +75,7 @@ describe('归档库与归档管理 UI', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ ...archivedReview, id: 6, title: '筛选归档下一页' }], nextCursor: null, hasMore: false }), { status: 200 }));
     render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor="old-next" initialHasMore />);
 
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
     fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-08-27' } });
     fireEvent.change(screen.getByLabelText('按严重级别筛选'), { target: { value: 'P1' } });
@@ -111,6 +112,23 @@ describe('归档库与归档管理 UI', () => {
     expect(screen.queryByText('已归档日志')).toBeNull();
   });
 
+  it('归档筛选将次要条件收入更多条件，并可重置', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [archivedReview], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
+
+    expect(screen.queryByLabelText('按提交人筛选')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
+    fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'alice' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('author=alice');
+
+    await userEvent.click(screen.getByRole('button', { name: '重置' }));
+    expect((screen.getByLabelText('按提交人筛选') as HTMLInputElement).value).toBe('');
+    expect(window.location.search).toContain('scope=archived');
+  });
+
   it('连续快速应用筛选时旧响应不能覆盖最新结果、筛选和分页游标', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     let resolveFirst!: (response: Response) => void;
@@ -121,6 +139,7 @@ describe('归档库与归档管理 UI', () => {
 
     render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
 
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
     fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'alice' } });
     await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
     fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'bob' } });

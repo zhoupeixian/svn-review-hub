@@ -45,9 +45,9 @@ export default function IssueStatusPanel({ issue, readOnly = false }: { issue: E
   }
 
   return (
-    <section className="mt-5 border-t border-[#e8eee8] pt-5" aria-label="问题协作状态">
+    <section className="status-panel mt-5" aria-label="问题协作状态">
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        <strong className="text-[#29483a]">当前状态：{ISSUE_STATUS_LABELS[current.status]}</strong>
+        <strong className="meta-chip">当前状态：{ISSUE_STATUS_LABELS[current.status]}</strong>
         {current.statusUpdatedAt && <time className="text-[#718077]">更新于 {formatTime(current.statusUpdatedAt)}</time>}
       </div>
       {current.statusNote && <p className="mt-2 text-sm text-[#586b60]">处理说明：{current.statusNote}</p>}
@@ -58,7 +58,7 @@ export default function IssueStatusPanel({ issue, readOnly = false }: { issue: E
           </select>
         </label>
         <label className="grid gap-1.5 text-sm font-semibold text-[#40594c]">处理说明
-          <input value={note} maxLength={1000} onChange={(event) => setNote(event.target.value)} className="rounded-lg border border-[#c8d7ca] bg-white px-3 py-2.5 font-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46]" />
+          <input value={note} maxLength={1000} placeholder="例如：已修复，待验证" onChange={(event) => setNote(event.target.value)} className="rounded-lg border border-[#c8d7ca] bg-white px-3 py-2.5 font-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46]" />
         </label>
         <button disabled={saving} className="rounded-lg bg-[#1d5b46] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#174936] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46] disabled:opacity-60">{saving ? '保存中…' : '保存状态'}</button>
       </form>}

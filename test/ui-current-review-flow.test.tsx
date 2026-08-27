@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewExplorer from '../app/review-explorer';
 import IssueExplorer from '../app/issues/issue-explorer';
 import IssueStatusPanel from '../app/components/issue-status-panel';
+import ThemeSwitcher from '../app/components/theme-switcher';
 
 const review = {
   id: 1, logDate: '2026-08-27', title: '当前日志', overview: '摘要', scopeText: '',
@@ -37,8 +38,39 @@ describe('当前审查协作 UI', () => {
     window.history.pushState({}, '', '/issues?status=open&severity=P1');
     render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
     expect(document.getElementById('issue-42')).toBeTruthy();
-    expect(screen.getByRole('link', { name: /当前日志/ }).getAttribute('href')).toBe('/reviews/1#issue-42');
+    expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/reviews/1#issue-42');
     expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('status=open&severity=P1');
+  });
+
+  it('主题切换保存并恢复本机偏好', async () => {
+    render(<ThemeSwitcher />);
+    await userEvent.click(screen.getByRole('button', { name: '夜间专注' }));
+    expect(document.documentElement.dataset.theme).toBe('night');
+    expect(window.localStorage.getItem('review-portal-theme')).toBe('night');
+
+    cleanup();
+    document.documentElement.dataset.theme = '';
+    render(<ThemeSwitcher />);
+    expect(document.documentElement.dataset.theme).toBe('night');
+    expect(screen.getByRole('button', { name: '夜间专注' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('问题筛选将次要条件收入更多条件，并可重置为默认范围', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [issue], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+
+    expect(screen.queryByLabelText('按作者筛选')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
+    fireEvent.change(screen.getByLabelText('按作者筛选'), { target: { value: 'alice' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('author=alice');
+
+    await userEvent.click(screen.getByRole('button', { name: '重置' }));
+    expect((screen.getByLabelText('按作者筛选') as HTMLInputElement).value).toBe('');
+    expect(window.location.search).toBe('');
+    expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain('author=');
   });
 
   it('切换问题筛选后重置分页，并只追加新筛选的后续页', async () => {
@@ -55,6 +87,7 @@ describe('当前审查协作 UI', () => {
     render(<IssueExplorer initialItems={[issue]} initialCursor="open-next" initialHasMore />);
 
     await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), 'resolved');
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
     expect(await screen.findByText(/已解决问题/)).toBeTruthy();
     expect(screen.queryByText(/权限问题/)).toBeNull();
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('status=resolved');
@@ -72,9 +105,11 @@ describe('当前审查协作 UI', () => {
     fetchMock.mockImplementation((input) => Promise.resolve(new Response(JSON.stringify({ items: [input.toString().includes('cursor=') ? { ...issue, id: 46, title: '日期版本下一页' } : { ...issue, id: 45, title: '日期版本问题' }], nextCursor: input.toString().includes('cursor=') ? null : 'filtered-next', hasMore: !input.toString().includes('cursor=') }), { status: 200 })));
     render(<IssueExplorer initialItems={[issue]} initialCursor="old-next" initialHasMore />);
 
+    await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
     fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-08-27' } });
     fireEvent.change(screen.getByLabelText('按 Revision 筛选'), { target: { value: '53365' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
     expect(await screen.findByText(/日期版本问题/)).toBeTruthy();
     expect(screen.queryByText('权限问题')).toBeNull();
     expect(window.location.search).toContain('from=2026-08-01');
