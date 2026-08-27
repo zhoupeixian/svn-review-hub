@@ -12,7 +12,7 @@ export type EditableIssue = {
   events?: Array<{ id: number; fromStatus: IssueStatus | null; toStatus: IssueStatus; note: string; createdAt: string }>;
 };
 
-export default function IssueStatusPanel({ issue }: { issue: EditableIssue }) {
+export default function IssueStatusPanel({ issue, readOnly = false }: { issue: EditableIssue; readOnly?: boolean }) {
   const [current, setCurrent] = useState(issue);
   const [status, setStatus] = useState<IssueStatus>(issue.status);
   const [note, setNote] = useState(issue.statusNote ?? '');
@@ -51,7 +51,7 @@ export default function IssueStatusPanel({ issue }: { issue: EditableIssue }) {
         {current.statusUpdatedAt && <time className="text-[#718077]">更新于 {formatTime(current.statusUpdatedAt)}</time>}
       </div>
       {current.statusNote && <p className="mt-2 text-sm text-[#586b60]">处理说明：{current.statusNote}</p>}
-      <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-[180px_1fr_auto] sm:items-end">
+      {!readOnly && <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-[180px_1fr_auto] sm:items-end">
         <label className="grid gap-1.5 text-sm font-semibold text-[#40594c]">状态
           <select value={status} onChange={(event) => setStatus(event.target.value as IssueStatus)} className="rounded-lg border border-[#c8d7ca] bg-white px-3 py-2.5 font-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46]">
             {ISSUE_STATUSES.map((value) => <option key={value} value={value}>{ISSUE_STATUS_LABELS[value]}</option>)}
@@ -61,7 +61,7 @@ export default function IssueStatusPanel({ issue }: { issue: EditableIssue }) {
           <input value={note} maxLength={1000} onChange={(event) => setNote(event.target.value)} className="rounded-lg border border-[#c8d7ca] bg-white px-3 py-2.5 font-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46]" />
         </label>
         <button disabled={saving} className="rounded-lg bg-[#1d5b46] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#174936] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46] disabled:opacity-60">{saving ? '保存中…' : '保存状态'}</button>
-      </form>
+      </form>}
       {message && <p role={conflict ? 'alert' : 'status'} className={`mt-3 text-sm ${conflict ? 'font-semibold text-[#a44138]' : 'text-[#35644d]'}`}>{message}{conflict && ' 已保留当前填写内容，请重新加载页面后再提交。'}</p>}
       {events.length > 0 && <div className="mt-5"><h4 className="text-sm font-bold text-[#40594c]">处理时间线</h4><ol className="mt-2 grid gap-2">{events.map((item) => <li key={item.id} className="rounded-lg bg-[#f5f8f5] px-3 py-2 text-xs leading-5 text-[#607167]"><time>{formatTime(item.createdAt)}</time> · {item.fromStatus ? ISSUE_STATUS_LABELS[item.fromStatus] : '初始'} → {ISSUE_STATUS_LABELS[item.toStatus]}{item.note && ` · ${item.note}`}</li>)}</ol></div>}
     </section>

@@ -57,17 +57,24 @@ export async function PATCH(request: Request, { params }: Props) {
     }
 
     const updatedAt = new Date().toISOString();
-    const updated = await db
-      .prepare(
+    const [, updated] = await db.batch<{ version: number; statusUpdatedAt: string }>([
+      db.prepare(
+        `INSERT INTO review_issue_events
+         (issue_id, from_status, to_status, note, created_at)
+         SELECT i.id, i.status, ?, ?, ?
+         FROM review_issues i
+         WHERE i.id = ? AND i.source_current = 1 AND i.version = ?
+           AND EXISTS (SELECT 1 FROM review_logs l WHERE l.id = i.review_id AND l.archived_at IS NULL)`,
+      ).bind(input.status, input.note, updatedAt, id, input.version),
+      db.prepare(
         `UPDATE review_issues
          SET status = ?, status_note = ?, status_updated_at = ?, version = version + 1
          WHERE id = ? AND source_current = 1 AND version = ?
            AND EXISTS (SELECT 1 FROM review_logs l WHERE l.id = review_issues.review_id AND l.archived_at IS NULL)
          RETURNING version, status_updated_at AS statusUpdatedAt`,
-      )
-      .bind(input.status, input.note, updatedAt, id, input.version)
-      .first<{ version: number; statusUpdatedAt: string }>();
-    if (!updated) {
+      ).bind(input.status, input.note, updatedAt, id, input.version),
+    ]);
+    if (!updated.results?.length) {
       const latest = await db.prepare('SELECT version FROM review_issues WHERE id = ?').bind(id).first<{ version: number }>();
       return Response.json(
         { error: '问题版本已变化，请刷新后重试。', currentVersion: latest?.version ?? current.version },
@@ -75,21 +82,12 @@ export async function PATCH(request: Request, { params }: Props) {
       );
     }
 
-    await db
-      .prepare(
-        `INSERT INTO review_issue_events
-         (issue_id, from_status, to_status, note, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .bind(id, current.status, input.status, input.note, updatedAt)
-      .run();
-
     return Response.json({
       id,
       status: input.status,
       statusNote: input.note,
       statusUpdatedAt: updatedAt,
-      version: updated.version,
+      version: updated.results[0].version,
     });
   } catch (error) {
     return Response.json(

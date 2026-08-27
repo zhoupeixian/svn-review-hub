@@ -112,7 +112,7 @@ export default async function ReviewPage({ params }: Props) {
                   <p className="mt-4 whitespace-pre-line text-sm leading-6 text-[#607167]">
                     {issue.detail}
                   </p>
-                  <IssueStatusPanel issue={issue} />
+                  <IssueStatusPanel issue={issue} readOnly={review.archivedAt !== null} />
                 </article>
               ))}
             </div>

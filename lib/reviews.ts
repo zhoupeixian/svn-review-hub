@@ -411,10 +411,15 @@ async function ensureReviewSearch(DB: D1Database): Promise<void> {
     'issue_details',
     'status_notes',
   ].join(', ');
-  await DB.prepare(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS review_search USING fts5(${searchColumns}, tokenize='trigram')`,
-  ).run();
-  await rebuildAllReviewSearch(DB);
+  const existingSearch = await DB.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_search'",
+  ).first();
+  if (!existingSearch) {
+    await DB.prepare(
+      `CREATE VIRTUAL TABLE review_search USING fts5(${searchColumns}, tokenize='trigram')`,
+    ).run();
+    await rebuildAllReviewSearch(DB);
+  }
 
   const rebuildNewReview = reviewSearchTriggerBody('NEW.id');
   const rebuildNewRevisionReview = reviewSearchTriggerBody('NEW.review_id');
@@ -520,16 +525,20 @@ export async function getSyncHealth(): Promise<SyncHealth> {
     p1Count: number;
     p2Count: number;
     p3Count: number;
+    id: number;
   }>([
     'SELECT updated_at AS updatedAt, log_date AS logDate,',
     'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
     'skipped_count AS skippedCount, p1_count AS p1Count,',
-    'p2_count AS p2Count, p3_count AS p3Count',
+    'p2_count AS p2Count, p3_count AS p3Count, id',
     'FROM review_logs WHERE sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
   ].join(' '), ['automation']);
-  const latestRevision = await first<{ revision: number }>(
-    'SELECT MAX(r.revision) AS revision FROM review_revisions r JOIN review_logs l ON l.id = r.review_id',
-  );
+  const latestRevision = latest
+    ? await first<{ revision: number }>(
+        'SELECT MAX(revision) AS revision FROM review_revisions WHERE review_id = ?',
+        [latest.id],
+      )
+    : null;
   const stats = await getCurrentReviewStats();
   const reviewCount = await first<{ count: number }>(
     'SELECT COUNT(*) AS count FROM review_logs WHERE archived_at IS NULL',
@@ -667,7 +676,7 @@ export async function getReviewExportRows(filters: ReviewListFilters = {}): Prom
 
 export function toCsv(rows: ReviewExportRow[]): string {
   const headers = ['问题键', '状态', '处理说明', '更新时间', '严重级别', '标题', 'Revision', '作者', '日志日期', '详情链接'];
-  const protect = (value: string): string => /^[=+\-@]/.test(value) ? `'${value}` : value;
+  const protect = (value: string): string => /^\s*[=+\-@]/.test(value) ? `'${value}` : value;
   const cell = (value: string): string => `"${protect(value).replace(/"/g, '""')}"`;
   return [headers, ...rows.map((row) => [
     row.issueKey, row.status, row.statusNote, row.updatedAt, row.severity,

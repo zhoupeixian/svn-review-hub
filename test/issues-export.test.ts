@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 vi.mock('@/app/chatgpt-auth', () => ({ getChatGPTUser: vi.fn(async () => null) }));
 import { GET as exportIssues } from '@/app/api/issues/export/route';
 import { GET as exportReviews } from '@/app/api/reviews/export/route';
-import { ingestReview } from '@/lib/reviews';
+import { ingestReview, toCsv } from '@/lib/reviews';
 
 const DB = (env as { DB: D1Database }).DB;
 
@@ -48,5 +48,22 @@ describe.sequential('CSV 导出', () => {
     const response = await exportReviews(new Request('https://review.test/api/reviews/export?scope=archived'));
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('归档日志');
+  });
+
+  it('公式防护忽略公式前的空白字符', () => {
+    const row = {
+      issueKey: 'issue', status: 'open', updatedAt: '', severity: 'P1', title: '标题',
+      revision: '', author: '', logDate: '', detailUrl: '', statusNote: '',
+    };
+    const csv = toCsv([
+      { ...row, statusNote: ' =SUM(A1)' },
+      { ...row, statusNote: '\t+SUM(A1)' },
+      { ...row, statusNote: '\r-1' },
+      { ...row, statusNote: '\n@cmd' },
+    ]);
+    expect(csv).toContain("\"' =SUM(A1)\"");
+    expect(csv).toContain("\"'\t+SUM(A1)\"");
+    expect(csv).toContain("\"'\r-1\"");
+    expect(csv).toContain("\"'\n@cmd\"");
   });
 });

@@ -46,6 +46,27 @@ it('相同版本并发更新只允许一个成功', async () => {
   expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
 });
 
+it('事件写入失败时不提交状态或版本变更', async () => {
+  const issue = await DB.prepare('SELECT id FROM review_issues LIMIT 1').first<{ id: number }>();
+  await DB.prepare(
+    "CREATE TRIGGER issue_event_insert_fails BEFORE INSERT ON review_issue_events BEGIN SELECT RAISE(ABORT, 'event insert failed'); END",
+  ).run();
+  try {
+    const response = await PATCH(new Request('https://review.test', {
+      method: 'PATCH', headers: { 'CF-Connecting-IP': '192.0.2.2' },
+      body: JSON.stringify({ status: 'resolved', note: '不应保存', version: 0 }),
+    }), { params: Promise.resolve({ id: String(issue!.id) }) });
+    expect(response.status).toBe(500);
+  } finally {
+    await DB.prepare('DROP TRIGGER issue_event_insert_fails').run();
+  }
+  const unchanged = await DB.prepare(
+    'SELECT status, status_note AS statusNote, version FROM review_issues WHERE id = ?',
+  ).bind(issue!.id).first<{ status: string; statusNote: string | null; version: number }>();
+  expect(unchanged).toEqual({ status: 'open', statusNote: null, version: 0 });
+  expect((await DB.prepare('SELECT COUNT(*) AS count FROM review_issue_events').first<{ count: number }>())?.count).toBe(0);
+});
+
 it('问题列表默认只返回活动当前源问题', async () => {
   const response = await GET(new Request('https://review.test/api/issues'));
   expect(response.status).toBe(200);

@@ -1,5 +1,5 @@
 /// @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewExplorer from '../app/review-explorer';
@@ -19,7 +19,11 @@ const issue = {
 };
 
 describe('当前审查协作 UI', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    cleanup();
+    window.history.replaceState({}, '', '/');
+  });
 
   it('首页加载更多追加 API 返回的下一页', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({ items: [{ ...review, id: 2, logDate: '2026-08-26' }], nextCursor: null, hasMore: false }), { status: 200 }));
@@ -35,6 +39,39 @@ describe('当前审查协作 UI', () => {
     expect(document.getElementById('issue-42')).toBeTruthy();
     expect(screen.getByRole('link', { name: /当前日志/ }).getAttribute('href')).toBe('/reviews/1#issue-42');
     expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('status=open&severity=P1');
+  });
+
+  it('切换问题筛选后重置分页，并只追加新筛选的后续页', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{ ...issue, id: 43, title: '已解决问题', status: 'resolved' }],
+        nextCursor: 'resolved-next', hasMore: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{ ...issue, id: 44, title: '已解决问题下一页', status: 'resolved' }],
+        nextCursor: null, hasMore: false,
+      }), { status: 200 }));
+    render(<IssueExplorer initialItems={[issue]} initialCursor="open-next" initialHasMore />);
+
+    await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), 'resolved');
+    expect(await screen.findByText(/已解决问题/)).toBeTruthy();
+    expect(screen.queryByText(/权限问题/)).toBeNull();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('status=resolved');
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('cursor=');
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更多问题' }));
+    expect(await screen.findByText(/已解决问题下一页/)).toBeTruthy();
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('status=resolved');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('cursor=resolved-next');
+    expect(screen.queryByText(/权限问题/)).toBeNull();
+  });
+
+  it('只读状态面板仍显示处理信息，但不提供保存操作', () => {
+    render(<IssueStatusPanel issue={{ ...issue, statusNote: '已归档说明' }} readOnly />);
+    expect(screen.getByText('当前状态：待处理')).toBeTruthy();
+    expect(screen.getByText('处理说明：已归档说明')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '保存状态' })).toBeNull();
   });
 
   it('状态更新成功显示新状态，409 保留说明', async () => {

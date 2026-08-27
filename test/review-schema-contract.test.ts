@@ -216,6 +216,12 @@ describe.sequential('审查生命周期 D1 schema', () => {
        SET status = 'resolved', status_note = '历史状态不得覆盖', version = 4
        WHERE id = 10`,
     ).run();
+    await DB.prepare(
+      `INSERT INTO review_search (
+        rowid, review_id, title, overview, scope_text, revisions, authors,
+        descriptions, issue_titles, issue_details, status_notes
+      ) VALUES (999, 999, '保留索引行', '', '', '', '', '', '', '', '')`,
+    ).run();
     await ensureReviewSchema();
     const secondPass = await DB.prepare(
       `SELECT id, issue_key AS issueKey, status, status_note AS statusNote,
@@ -232,6 +238,9 @@ describe.sequential('审查生命周期 D1 schema', () => {
     const eventCount = await DB.prepare(
       'SELECT COUNT(*) AS count FROM review_issue_events WHERE id = 20',
     ).first<{ count: number }>();
+    const preservedSearchRow = await DB.prepare(
+      'SELECT title FROM review_search WHERE rowid = 999',
+    ).first<{ title: string }>();
 
     expect(firstPass).toEqual({
       contentObjectKey: 'review-logs/2026-08-20/legacy.md',
@@ -253,6 +262,7 @@ describe.sequential('审查生命周期 D1 schema', () => {
       },
     ]);
     expect(eventCount?.count).toBe(1);
+    expect(preservedSearchRow?.title).toBe('保留索引行');
   });
 
   it('新问题使用默认状态，事件必须关联问题，问题必须关联日志', async () => {
