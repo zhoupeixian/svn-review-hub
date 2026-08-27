@@ -142,6 +142,11 @@ main {
 .meta-chip { display: inline-flex; align-items: center; gap: 0.25rem; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-muted); color: var(--text-muted); padding: 0.24rem 0.55rem; font-size: 0.75rem; font-weight: 700; }
 .issue-card { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1rem; box-shadow: 0 7px 20px rgb(30 42 36 / 4%); }
 .status-panel { border: 1px solid var(--border); border-radius: 0.85rem; background: var(--surface-muted); padding: 0.9rem; }
+.home-quick-search { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1.1rem; box-shadow: 0 8px 24px rgb(30 42 36 / 4%); }
+.home-quick-search label { display: grid; gap: 0.38rem; color: var(--text-muted); font-size: 0.78rem; font-weight: 700; }
+.home-quick-search input { min-width: 0; border: 1px solid var(--border-strong); border-radius: 0.6rem; background: var(--surface); color: var(--text); padding: 0.62rem 0.72rem; font-size: 0.9rem; }
+.stat-card { display: block; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.stat-card:hover { border-color: var(--accent); box-shadow: 0 9px 22px rgb(30 42 36 / 8%); transform: translateY(-2px); }
 
 @media (max-width: 640px) {
   .theme-switcher { left: 0.75rem; right: 0.75rem; justify-content: space-between; }

@@ -46,14 +46,7 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
     title,
     overview,
     scopeText,
-    revisionCount: countFrom(scopeText, /共\s*(\d+)\s*个\s*revision/i),
-    reviewedCount:
-      countFrom(scopeText, /实际审查\s*(\d+)\s*个/i) ||
-      countFrom(scopeText, /(\d+)\s*个\s*可审查/i),
-    skippedCount: countFrom(
-      scopeText,
-      /跳过\s*(\d+)\s*个|(\d+)\s*个[^，。]*跳过/i,
-    ),
+    ...parseReviewScopeCounts(scopeText),
     p1Count: countSeverity(markdown, 'P1'),
     p2Count: countSeverity(markdown, 'P2'),
     p3Count: countSeverity(markdown, 'P3'),
@@ -68,6 +61,19 @@ function lineValue(lines: string[], label: string): string {
 
 function countFrom(value: string, pattern: RegExp): number {
   return Number(value.match(pattern)?.slice(1).find(Boolean) ?? 0);
+}
+
+export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> {
+  return {
+    revisionCount: countFrom(scopeText, /共\s*(\d+)\s*个\s*revision/i),
+    reviewedCount:
+      countFrom(scopeText, /实际审查\s*(\d+)\s*个/i) ||
+      countFrom(scopeText, /(\d+)\s*个\s*可审查/i),
+    skippedCount: countFrom(
+      scopeText,
+      /跳过\s*(\d+)\s*个|(\d+)\s*个[^，。]*跳过/i,
+    ),
+  };
 }
 
 function countSeverity(markdown: string, severity: 'P1' | 'P2' | 'P3'): number {

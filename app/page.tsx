@@ -1,4 +1,5 @@
 import ReviewExplorer from '@/app/review-explorer';
+import HomeQuickSearch from '@/app/components/home-quick-search';
 import { getCurrentReviewStats, getReviewPage, getSyncHealth } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
@@ -77,11 +78,15 @@ export default async function Home() {
         </div>
       </section>
 
-      <section className="mx-auto grid max-w-7xl gap-3 px-5 pb-10 sm:grid-cols-4 sm:px-8"><Stat label="当前日志" value={stats.reviewCount} /><Stat label="待处理问题" value={stats.openIssueCount} /><Stat label="待确认问题" value={stats.pendingReviewCount} /><Stat label="P1/P2 风险" value={stats.highRiskCount} /></section>
+      <section className="mx-auto grid max-w-7xl gap-3 px-5 pb-6 sm:grid-cols-4 sm:px-8"><Stat label="当前日志" value={stats.reviewCount} href="#history" /><Stat label="待处理问题" value={stats.openIssueCount} href="/issues?status=open" /><Stat label="待确认问题" value={stats.pendingReviewCount} href="/issues?status=pending_review" /><Stat label="P1/P2 风险" value={stats.highRiskCount} href="/issues?severity=P1&severity=P2" /></section>
+      <section className="mx-auto max-w-7xl px-5 pb-10 sm:px-8"><HomeQuickSearch /></section>
       <section className="mx-auto max-w-7xl px-5 pb-10 sm:px-8"><div className="rounded-2xl border border-[#d9e4da] bg-white p-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#708177]">同步健康</p><h2 className="mt-2 text-xl font-black text-[#193b2e]">自动同步状态</h2></div><div className="text-right text-sm text-[#5d6e64]"><p>最近成功同步：{health.latestAutomationSyncAt ?? '暂无'}</p><p className="mt-1">最近日志：{health.latestLogDate ?? '暂无'} · 最新 Revision：{health.latestRevision ?? '暂无'}</p></div></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><Stat label="当前问题" value={health.currentIssueCount} /><Stat label="待确认问题" value={health.pendingIssueCount} /><Stat label="当前日志" value={health.reviewCount} /></div>{health.parseFailure && <p role="alert" className="mt-4 text-sm font-semibold text-[#a44138]">最近一次自动同步未解析出有效提交，请检查日志格式。</p>}{health.zeroIssueWarning && !health.parseFailure && <p role="status" className="mt-4 text-sm font-semibold text-[#8a6a2b]">最近一次自动同步没有提取到问题，请确认审查结果是否完整。</p>}</div></section>
       <ReviewExplorer initialItems={reviews} initialCursor={page.nextCursor} initialHasMore={page.hasMore} />
     </main>
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) { return <div className="rounded-xl border border-[#d9e4da] bg-white p-4"><p className="text-xs font-semibold text-[#718077]">{label}</p><p className="mt-1 text-2xl font-black text-[#245d46]">{value}</p></div>; }
+function Stat({ label, value, href }: { label: string; value: number; href?: string }) {
+  const content = <><p className="text-xs font-semibold text-[#718077]">{label}</p><p className="mt-1 text-2xl font-black text-[#245d46]">{value}</p></>;
+  return href ? <a href={href} className="stat-card rounded-xl border border-[#d9e4da] bg-white p-4">{content}</a> : <div className="rounded-xl border border-[#d9e4da] bg-white p-4">{content}</div>;
+}

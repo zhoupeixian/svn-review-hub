@@ -22,7 +22,10 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
 
   function queryFor(filters: URLSearchParams, pageCursor?: string) {
     const query = new URLSearchParams('scope=active');
-    for (const [key, value] of filters) query.set(key === 'q' ? 'keyword' : key === 'from' ? 'fromDate' : key === 'to' ? 'toDate' : key, value);
+    for (const [key, value] of filters) {
+      const target = key === 'q' ? 'keyword' : key === 'from' ? 'fromDate' : key === 'to' ? 'toDate' : key;
+      if (target === 'severity' || target === 'status') query.append(target, value); else query.set(target, value);
+    }
     if (!filters.get('status')) { query.append('status', 'open'); query.append('status', 'pending_review'); }
     if (pageCursor) query.set('cursor', pageCursor);
     return query;
@@ -32,6 +35,15 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
     setDraft((current) => {
       const next = new URLSearchParams(current);
       if (value) next.set(key, value); else next.delete(key);
+      return next;
+    });
+  }
+
+  function updateSeverity(value: string) {
+    setDraft((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('severity');
+      for (const severity of value ? value.split(',') : []) next.append('severity', severity);
       return next;
     });
   }
@@ -67,7 +79,10 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
 
   const share = typeof window === 'undefined' ? '' : `${window.location.origin}/issues${params.size ? `?${params}` : ''}`;
   const exportParams = new URLSearchParams('scope=active');
-  for (const [key, value] of params) exportParams.set(key === 'q' ? 'keyword' : key === 'from' ? 'fromDate' : key === 'to' ? 'toDate' : key, value);
+  for (const [key, value] of params) {
+    const target = key === 'q' ? 'keyword' : key === 'from' ? 'fromDate' : key === 'to' ? 'toDate' : key;
+    if (target === 'severity' || target === 'status') exportParams.append(target, value); else exportParams.set(target, value);
+  }
   if (!params.get('status')) { exportParams.append('status', 'open'); exportParams.append('status', 'pending_review'); }
 
   async function copyShareLink() {
@@ -78,7 +93,7 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
   return <section className="mt-6">
     <div className="filter-panel">
       <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-black text-[#243e31]">筛选问题</p><p className="mt-1 text-xs text-[#718077]">先选常用条件，再按需展开日期、作者和 Revision。</p></div><button type="button" className="filter-quiet" onClick={() => setAdvanced((value) => !value)}>{advanced ? '收起条件' : '更多条件'}</button></div>
-      <div className="mt-4 grid gap-3 md:grid-cols-3"><label>状态<select aria-label="按状态筛选" value={draft.get('status') ?? ''} onChange={(event) => updateDraft('status', event.target.value)}><option value="">待处理、待确认</option>{ISSUE_STATUSES.map((value) => <option key={value} value={value}>{ISSUE_STATUS_LABELS[value]}</option>)}</select></label><label>严重级别<select aria-label="按严重级别筛选" value={draft.get('severity') ?? ''} onChange={(event) => updateDraft('severity', event.target.value)}><option value="">全部级别</option><option>P1</option><option>P2</option><option>P3</option></select></label><label>关键词<input aria-label="搜索问题" placeholder="标题、详情或处理说明" value={draft.get('q') ?? ''} onChange={(event) => updateDraft('q', event.target.value)} /></label></div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3"><label>状态<select aria-label="按状态筛选" value={draft.get('status') ?? ''} onChange={(event) => updateDraft('status', event.target.value)}><option value="">待处理、待确认</option>{ISSUE_STATUSES.map((value) => <option key={value} value={value}>{ISSUE_STATUS_LABELS[value]}</option>)}</select></label><label>严重级别<select aria-label="按严重级别筛选" value={draft.getAll('severity').sort().join(',')} onChange={(event) => updateSeverity(event.target.value)}><option value="">全部级别</option><option value="P1,P2">P1 + P2</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option></select></label><label>关键词<input aria-label="搜索问题" placeholder="标题、详情或处理说明" value={draft.get('q') ?? ''} onChange={(event) => updateDraft('q', event.target.value)} /></label></div>
       {advanced && <div className="mt-3 grid gap-3 md:grid-cols-4"><label>作者<input aria-label="按作者筛选" value={draft.get('author') ?? ''} onChange={(event) => updateDraft('author', event.target.value)} /></label><label>开始日期<input type="date" aria-label="开始日期" value={draft.get('from') ?? ''} onChange={(event) => updateDraft('from', event.target.value)} /></label><label>结束日期<input type="date" aria-label="结束日期" value={draft.get('to') ?? ''} onChange={(event) => updateDraft('to', event.target.value)} /></label><label>Revision<input inputMode="numeric" aria-label="按 Revision 筛选" value={draft.get('revision') ?? ''} onChange={(event) => updateDraft('revision', event.target.value)} /></label></div>}
       <div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" className="filter-apply" onClick={() => applyFilters()}>应用筛选</button><button type="button" className="filter-quiet" onClick={() => applyFilters(new URLSearchParams())}>重置</button><span className="text-xs text-[#718077]">当前已显示 {items.length} 条，导出最多包含 1,000 条问题。</span></div>
     </div>

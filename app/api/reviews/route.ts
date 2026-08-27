@@ -19,8 +19,8 @@ export function parseReviewFilters(url: URL) {
   if (statuses.some((value) => !ISSUE_STATUSES.includes(value as (typeof ISSUE_STATUSES)[number]))) {
     throw new Error('问题状态无效。');
   }
-  const severity = url.searchParams.get('severity') || undefined;
-  if (severity && !['P1', 'P2', 'P3'].includes(severity)) {
+  const severities = [...new Set(url.searchParams.getAll('severity').filter(Boolean))];
+  if (severities.some((severity) => !['P1', 'P2', 'P3'].includes(severity))) {
     throw new Error('问题等级无效。');
   }
   const revisionValue = url.searchParams.get('revision');
@@ -43,7 +43,8 @@ export function parseReviewFilters(url: URL) {
     toDate: url.searchParams.get('toDate') || undefined,
     author: url.searchParams.get('author') || undefined,
     revision: parsedRevision,
-    severity: severity as 'P1' | 'P2' | 'P3' | undefined,
+    severity: severities.length === 1 ? severities[0] as 'P1' | 'P2' | 'P3' : undefined,
+    severities: severities.length > 1 ? severities as ('P1' | 'P2' | 'P3')[] : undefined,
     status: status as (typeof ISSUE_STATUSES)[number] | undefined,
     statuses: statuses.length > 1 ? statuses as (typeof ISSUE_STATUSES)[number][] : undefined,
     keyword: url.searchParams.get('keyword') || undefined,

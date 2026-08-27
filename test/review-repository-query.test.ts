@@ -95,6 +95,18 @@ describe.sequential('审查日志 Repository 查询', () => {
     expect(cappedPage.items.some((item) => item.id === 99)).toBe(false);
   });
 
+  it('旧日志的范围文本可补齐历史错误保存的审查与跳过计数', async () => {
+    await insertReviews([{
+      id: 2,
+      logDate: '2026-08-27',
+      scopeText: '共 24 个 revision，其中 22 个可审查，2 个按默认规则跳过。',
+    }]);
+
+    const page = await getReviewPage({ scope: 'active' });
+
+    expect(page.items[0]).toMatchObject({ revisionCount: 24, reviewedCount: 22, skippedCount: 2 });
+  });
+
   it('在当前分区内组合日期、作者、Revision、风险、状态和关键词过滤', async () => {
     await insertReviews([
       {
@@ -317,6 +329,23 @@ describe.sequential('审查日志 Repository 查询', () => {
       sourceCurrent: 1,
     });
     expect(page.items[0]).not.toHaveProperty('detail');
+  });
+
+  it('问题看板可联合筛选 P1 和 P2，而不会混入 P3 或归档数据', async () => {
+    await insertReviews([
+      { id: 43, logDate: '2026-08-27', title: '当前联合风险日志' },
+      { id: 44, logDate: '2026-08-27', archived: true, title: '归档联合风险日志' },
+    ]);
+    await insertIssues([
+      { id: 430, reviewId: 43, severity: 'P1', title: 'P1 当前问题', relatedRevisions: '56011' },
+      { id: 431, reviewId: 43, severity: 'P2', title: 'P2 当前问题', relatedRevisions: '56012' },
+      { id: 432, reviewId: 43, severity: 'P3', title: 'P3 当前问题', relatedRevisions: '56013' },
+      { id: 433, reviewId: 44, severity: 'P1', title: 'P1 归档问题', relatedRevisions: '56014' },
+    ]);
+
+    const page = await getIssuePage({ scope: 'active', severities: ['P1', 'P2'] });
+
+    expect(page.items.map((item) => item.id).sort()).toEqual([430, 431]);
   });
 
   it('空页返回稳定结构，兼容摘要接口只返回当前区首页', async () => {

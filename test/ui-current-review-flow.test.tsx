@@ -6,6 +6,7 @@ import ReviewExplorer from '../app/review-explorer';
 import IssueExplorer from '../app/issues/issue-explorer';
 import IssueStatusPanel from '../app/components/issue-status-panel';
 import ThemeSwitcher from '../app/components/theme-switcher';
+import HomeQuickSearch from '../app/components/home-quick-search';
 
 const review = {
   id: 1, logDate: '2026-08-27', title: '当前日志', overview: '摘要', scopeText: '',
@@ -55,6 +56,16 @@ describe('当前审查协作 UI', () => {
     expect(screen.getByRole('button', { name: '夜间专注' }).getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('主页快捷查询用原生 GET 将关键词、Revision 和日期带到问题看板', () => {
+    render(<HomeQuickSearch />);
+    const form = screen.getByRole('search');
+    expect(form.getAttribute('action')).toBe('/issues');
+    expect(form.getAttribute('method')).toBe('get');
+    expect(screen.getByLabelText('快捷关键词').getAttribute('name')).toBe('q');
+    expect(screen.getByLabelText('快捷 Revision').getAttribute('name')).toBe('revision');
+    expect(screen.getByLabelText('快捷日期').getAttribute('name')).toBe('from');
+  });
+
   it('问题筛选将次要条件收入更多条件，并可重置为默认范围', async () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [issue], nextCursor: null, hasMore: false,
@@ -71,6 +82,19 @@ describe('当前审查协作 UI', () => {
     expect((screen.getByLabelText('按作者筛选') as HTMLInputElement).value).toBe('');
     expect(window.location.search).toBe('');
     expect(String(fetchMock.mock.calls[1]?.[0])).not.toContain('author=');
+  });
+
+  it('P1 + P2 联合筛选保留两个严重级别到查询与 Excel 导出', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [issue], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+
+    await userEvent.selectOptions(screen.getByLabelText('按严重级别筛选'), 'P1,P2');
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('severity=P1&severity=P2');
+    expect(screen.getByRole('link', { name: '导出 Excel 跟进表' }).getAttribute('href')).toContain('severity=P1&severity=P2');
   });
 
   it('切换问题筛选后重置分页，并只追加新筛选的后续页', async () => {

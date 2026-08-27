@@ -5,6 +5,7 @@ import {
   type ParsedRevision,
   normalizeRelatedRevisions,
   parseReviewMarkdown,
+  parseReviewScopeCounts,
 } from '@/lib/review-parser';
 import {
   ISSUE_STATUS_LABELS,
@@ -52,6 +53,7 @@ export type ReviewListFilters = {
   author?: string;
   revision?: number;
   severity?: ParsedIssue['severity'];
+  severities?: ParsedIssue['severity'][];
   status?: IssueStatus;
   keyword?: string;
   cursor?: string;
@@ -529,17 +531,19 @@ export async function getSyncHealth(): Promise<SyncHealth> {
     p2Count: number;
     p3Count: number;
     id: number;
+    scopeText: string;
   }>([
     'SELECT updated_at AS updatedAt, log_date AS logDate,',
     'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
     'skipped_count AS skippedCount, p1_count AS p1Count,',
-    'p2_count AS p2Count, p3_count AS p3Count, id',
+    'p2_count AS p2Count, p3_count AS p3Count, scope_text AS scopeText, id',
     'FROM review_logs WHERE sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
   ].join(' '), ['automation']);
-  const latestRevision = latest
+  const normalizedLatest = latest ? normalizeReviewCounts(latest) : null;
+  const latestRevision = normalizedLatest
     ? await first<{ revision: number }>(
         'SELECT MAX(revision) AS revision FROM review_revisions WHERE review_id = ?',
-        [latest.id],
+        [normalizedLatest.id],
       )
     : null;
   const stats = await getCurrentReviewStats();
@@ -553,17 +557,17 @@ export async function getSyncHealth(): Promise<SyncHealth> {
   );
 
   return {
-    latestAutomationSyncAt: latest?.updatedAt ?? null,
-    latestLogDate: latest?.logDate ?? null,
+    latestAutomationSyncAt: normalizedLatest?.updatedAt ?? null,
+    latestLogDate: normalizedLatest?.logDate ?? null,
     latestRevision: latestRevision?.revision ?? null,
     reviewCount: reviewCount?.count ?? stats.reviewCount,
     currentIssueCount: currentIssueCount?.count ?? 0,
     pendingIssueCount: stats.pendingReviewCount,
     parseFailure: Boolean(
-      latest && latest.revisionCount === 0 && latest.reviewedCount === 0 && latest.skippedCount === 0,
+      normalizedLatest && normalizedLatest.revisionCount === 0 && normalizedLatest.reviewedCount === 0 && normalizedLatest.skippedCount === 0,
     ),
     zeroIssueWarning: Boolean(
-      latest && latest.p1Count + latest.p2Count + latest.p3Count === 0,
+      normalizedLatest && normalizedLatest.p1Count + normalizedLatest.p2Count + normalizedLatest.p3Count === 0,
     ),
   };
 }
@@ -832,7 +836,8 @@ async function queryReviewPage(
     values,
   );
 
-  return toPageResult(rows, limit);
+  const page = toPageResult(rows, limit);
+  return { ...page, items: page.items.map(normalizeReviewCounts) };
 }
 
 async function queryIssuePage(
@@ -856,7 +861,10 @@ async function queryIssuePage(
     where.push('i.status = ?');
     values.push(filters.status);
   }
-  if (filters.severity) {
+  if (filters.severities?.length) {
+    where.push(`i.severity IN (${filters.severities.map(() => '?').join(',')})`);
+    values.push(...filters.severities);
+  } else if (filters.severity) {
     where.push('i.severity = ?');
     values.push(filters.severity);
   }
@@ -941,10 +949,13 @@ function addReviewRevisionFilters(
 function addReviewIssueFilters(
   where: string[],
   values: SqlValue[],
-  filters: Pick<ReviewListFilters, 'severity' | 'status'>,
+  filters: Pick<ReviewListFilters, 'severity' | 'severities' | 'status'>,
 ): void {
   const issueWhere = ['i.review_id = l.id', 'i.source_current = 1'];
-  if (filters.severity) {
+  if (filters.severities?.length) {
+    issueWhere.push(`i.severity IN (${filters.severities.map(() => '?').join(',')})`);
+    values.push(...filters.severities);
+  } else if (filters.severity) {
     issueWhere.push('i.severity = ?');
     values.push(filters.severity);
   }
@@ -1336,13 +1347,18 @@ export async function ingestReview(
   );
   if (!review) throw new Error('日志已写入，但未能读取导入结果。');
   return {
-    ...review,
+    ...normalizeReviewCounts(review),
     ingestion: {
       createdIssueCount,
       updatedIssueCount,
       parsedIssueCount: currentIssues.length,
     },
   };
+}
+
+function normalizeReviewCounts<T extends Pick<ReviewSummary, 'scopeText' | 'revisionCount' | 'reviewedCount' | 'skippedCount'>>(review: T): T {
+  if (review.revisionCount || review.reviewedCount || review.skippedCount || !review.scopeText) return review;
+  return { ...review, ...parseReviewScopeCounts(review.scopeText) };
 }
 
 function issueStableKey(
