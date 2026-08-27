@@ -1,6 +1,6 @@
 /// @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ArchiveExplorer from '../app/archive/archive-explorer';
@@ -66,6 +66,49 @@ describe('归档库与归档管理 UI', () => {
     expect(requestUrl).toContain('status=open');
     expect(requestUrl).toContain('keyword=%E6%9D%83%E9%99%90');
     expect(requestUrl).toContain('cursor=next+page');
+  });
+
+  it('归档筛选控件变更后刷新首屏并沿用日期、级别、状态、Revision、提交人和关键词', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ ...archivedReview, id: 7, title: '筛选归档' }], nextCursor: 'archive-next', hasMore: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ ...archivedReview, id: 6, title: '筛选归档下一页' }], nextCursor: null, hasMore: false }), { status: 200 }));
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor="old-next" initialHasMore />);
+
+    fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });
+    fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-08-27' } });
+    fireEvent.change(screen.getByLabelText('按严重级别筛选'), { target: { value: 'P1' } });
+    fireEvent.change(screen.getByLabelText('按问题状态筛选'), { target: { value: 'open' } });
+    fireEvent.change(screen.getByLabelText('按 Revision 筛选'), { target: { value: '53365' } });
+    fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('搜索归档日志'), { target: { value: '权限' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(await screen.findByText('筛选归档')).toBeTruthy();
+    expect(screen.queryByText('已归档日志')).toBeNull();
+    expect(window.location.search).toContain('fromDate=2026-08-01');
+    expect(window.location.search).toContain('toDate=2026-08-27');
+    expect(window.location.search).toContain('severity=P1');
+    expect(window.location.search).toContain('status=open');
+    expect(window.location.search).toContain('revision=53365');
+    expect(window.location.search).toContain('author=alice');
+    expect(window.location.search).toContain('keyword=%E6%9D%83%E9%99%90');
+    const firstUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+    expect(firstUrl).toContain('scope=archived');
+    expect(firstUrl).toContain('fromDate=2026-08-01');
+    expect(firstUrl).toContain('toDate=2026-08-27');
+    expect(firstUrl).toContain('severity=P1');
+    expect(firstUrl).toContain('status=open');
+    expect(firstUrl).toContain('revision=53365');
+    expect(firstUrl).toContain('author=alice');
+    expect(firstUrl).toContain('keyword=%E6%9D%83%E9%99%90');
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
+    expect(await screen.findByText('筛选归档下一页')).toBeTruthy();
+    const nextUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+    expect(nextUrl).toContain('cursor=archive-next');
+    expect(nextUrl).toContain('author=alice');
+    expect(nextUrl).toContain('keyword=%E6%9D%83%E9%99%90');
+    expect(screen.queryByText('已归档日志')).toBeNull();
   });
 
   it('显式选择日志后先预览，确认时只提交预览令牌', async () => {

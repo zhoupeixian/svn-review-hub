@@ -1,5 +1,5 @@
 /// @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewExplorer from '../app/review-explorer';
@@ -65,6 +65,33 @@ describe('当前审查协作 UI', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('status=resolved');
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('cursor=resolved-next');
     expect(screen.queryByText(/权限问题/)).toBeNull();
+  });
+
+  it('日期和 Revision 筛选可见，刷新首屏并让加载更多沿用全部参数', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    fetchMock.mockImplementation((input) => Promise.resolve(new Response(JSON.stringify({ items: [input.toString().includes('cursor=') ? { ...issue, id: 46, title: '日期版本下一页' } : { ...issue, id: 45, title: '日期版本问题' }], nextCursor: input.toString().includes('cursor=') ? null : 'filtered-next', hasMore: !input.toString().includes('cursor=') }), { status: 200 })));
+    render(<IssueExplorer initialItems={[issue]} initialCursor="old-next" initialHasMore />);
+
+    fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });
+    fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-08-27' } });
+    fireEvent.change(screen.getByLabelText('按 Revision 筛选'), { target: { value: '53365' } });
+    expect(await screen.findByText(/日期版本问题/)).toBeTruthy();
+    expect(screen.queryByText('权限问题')).toBeNull();
+    expect(window.location.search).toContain('from=2026-08-01');
+    expect(window.location.search).toContain('to=2026-08-27');
+    expect(window.location.search).toContain('revision=53365');
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('fromDate=2026-08-01');
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('toDate=2026-08-27');
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain('revision=53365');
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更多问题' }));
+    expect(await screen.findByText(/日期版本下一页/)).toBeTruthy();
+    const nextUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+    expect(nextUrl).toContain('fromDate=2026-08-01');
+    expect(nextUrl).toContain('toDate=2026-08-27');
+    expect(nextUrl).toContain('revision=53365');
+    expect(nextUrl).toContain('cursor=filtered-next');
+    expect(screen.queryByText('权限问题')).toBeNull();
   });
 
   it('只读状态面板仍显示处理信息，但不提供保存操作', () => {
