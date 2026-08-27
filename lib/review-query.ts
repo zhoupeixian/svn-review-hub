@@ -6,6 +6,7 @@ export type PageCursor = {
 export type PageResult<T> = {
   items: T[];
   nextCursor: string | null;
+  hasMore: boolean;
 };
 
 const DEFAULT_PAGE_SIZE = 20;

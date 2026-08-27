@@ -5,7 +5,19 @@ import {
   type ParsedRevision,
   parseReviewMarkdown,
 } from '@/lib/review-parser';
-import { ISSUE_STATUSES, normalizeIssueKey } from '@/lib/issue-lifecycle';
+import {
+  ISSUE_STATUSES,
+  type IssueStatus,
+  normalizeIssueKey,
+} from '@/lib/issue-lifecycle';
+import {
+  decodePageCursor,
+  encodePageCursor,
+  normalizePageSize,
+  type PageResult,
+} from '@/lib/review-query';
+
+export type { PageResult } from '@/lib/review-query';
 
 type SqlValue = string | number | null;
 
@@ -25,6 +37,41 @@ export type ReviewSummary = {
   syncMode: string;
   importedAt: string;
   updatedAt: string;
+  archivedAt: string | null;
+};
+
+export type ReviewScope = 'active' | 'archived';
+
+export type ReviewListFilters = {
+  scope?: ReviewScope;
+  fromDate?: string;
+  toDate?: string;
+  author?: string;
+  revision?: number;
+  severity?: ParsedIssue['severity'];
+  status?: IssueStatus;
+  keyword?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type IssueListFilters = ReviewListFilters;
+
+export type ReviewIssueSummary = {
+  id: number;
+  reviewId: number;
+  issueKey: string | null;
+  severity: ParsedIssue['severity'];
+  title: string;
+  relatedRevisions: string;
+  status: IssueStatus;
+  statusNote: string | null;
+  statusUpdatedAt: string | null;
+  sourceCurrent: number;
+  version: number;
+  logDate: string;
+  reviewTitle: string;
+  authors: string;
 };
 
 export type ReviewDetail = ReviewSummary & {
@@ -329,7 +376,7 @@ async function ensureReviewSearch(DB: D1Database): Promise<void> {
   await DB.prepare(
     `CREATE VIRTUAL TABLE IF NOT EXISTS review_search USING fts5(${searchColumns}, tokenize='trigram')`,
   ).run();
-  await rebuildReviewSearch(DB);
+  await rebuildAllReviewSearch(DB);
 
   const rebuildNewReview = reviewSearchTriggerBody('NEW.id');
   const rebuildNewRevisionReview = reviewSearchTriggerBody('NEW.review_id');
@@ -348,10 +395,22 @@ async function ensureReviewSearch(DB: D1Database): Promise<void> {
   await DB.batch(triggers.map((statement) => DB.prepare(statement)));
 }
 
-async function rebuildReviewSearch(DB: D1Database): Promise<void> {
+async function rebuildAllReviewSearch(DB: D1Database): Promise<void> {
   await DB.batch([
     DB.prepare('DELETE FROM review_search'),
     DB.prepare(reviewSearchInsertSql()),
+  ]);
+}
+
+export async function rebuildReviewSearch(reviewId: number): Promise<void> {
+  if (!Number.isInteger(reviewId) || reviewId <= 0) {
+    throw new Error('审查日志 ID 无效。');
+  }
+  await ensureReviewSchema();
+  const { DB } = getRuntime();
+  await DB.batch([
+    DB.prepare('DELETE FROM review_search WHERE rowid = ?').bind(reviewId),
+    DB.prepare(reviewSearchInsertSql('l.id = ?')).bind(reviewId),
   ]);
 }
 
@@ -402,18 +461,335 @@ async function first<T>(
 }
 
 export async function getReviewSummaries(): Promise<ReviewSummary[]> {
-  return all<ReviewSummary>(
+  return (await getReviewPage({ scope: 'active' })).items;
+}
+
+export async function getReviewPage(
+  filters: ReviewListFilters = {},
+): Promise<PageResult<ReviewSummary>> {
+  const scope = normalizeScope(filters.scope);
+  const limit = normalizeRepositoryPageSize(filters.limit);
+  const keyword = filters.keyword?.trim() ?? '';
+  const useLike = keyword.length > 0 && [...keyword].length < 3;
+
+  try {
+    return await queryReviewPage(filters, scope, limit, keyword, useLike);
+  } catch (error) {
+    if (!keyword || useLike || !isFtsQueryError(error)) throw error;
+    return queryReviewPage(filters, scope, limit, keyword, true);
+  }
+}
+
+export async function getIssuePage(
+  filters: IssueListFilters = {},
+): Promise<PageResult<ReviewIssueSummary>> {
+  const scope = normalizeScope(filters.scope);
+  const limit = normalizeRepositoryPageSize(filters.limit);
+  const keyword = filters.keyword?.trim() ?? '';
+  const useLike = keyword.length > 0 && [...keyword].length < 3;
+
+  try {
+    return await queryIssuePage(filters, scope, limit, keyword, useLike);
+  } catch (error) {
+    if (!keyword || useLike || !isFtsQueryError(error)) throw error;
+    return queryIssuePage(filters, scope, limit, keyword, true);
+  }
+}
+
+type ReviewSummaryRow = ReviewSummary & {
+  cursorUpdatedAt: string;
+};
+
+type ReviewIssueSummaryRow = ReviewIssueSummary & {
+  cursorUpdatedAt: string;
+};
+
+const ISSUE_CURSOR_FLOOR = '1000-01-01T00:00:00.000Z';
+
+async function queryReviewPage(
+  filters: ReviewListFilters,
+  scope: ReviewScope,
+  limit: 20 | 50,
+  keyword: string,
+  useLike: boolean,
+): Promise<PageResult<ReviewSummary>> {
+  const values: SqlValue[] = [];
+  const where = [
+    scope === 'active' ? 'l.archived_at IS NULL' : 'l.archived_at IS NOT NULL',
+  ];
+  addReviewDateFilters(where, values, filters);
+  addReviewRevisionFilters(where, values, filters);
+  addReviewIssueFilters(where, values, filters);
+  addReviewKeywordFilter(where, values, keyword, useLike);
+
+  if (filters.cursor) {
+    const cursor = decodePageCursor(filters.cursor);
+    where.push('(l.log_date < ? OR (l.log_date = ? AND l.id < ?))');
+    values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+  }
+  values.push(limit + 1);
+
+  const rows = await all<ReviewSummaryRow>(
     [
-      'SELECT id, log_date AS logDate, title, overview,',
-      'scope_text AS scopeText, source_name AS sourceName,',
-      'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
-      'skipped_count AS skippedCount, p1_count AS p1Count,',
-      'p2_count AS p2Count, p3_count AS p3Count,',
-      'sync_mode AS syncMode, imported_at AS importedAt,',
-      'updated_at AS updatedAt',
-      'FROM review_logs',
-      'ORDER BY log_date DESC, id DESC',
+      'SELECT l.id, l.log_date AS logDate, l.log_date AS cursorUpdatedAt,',
+      'l.title, l.overview, l.scope_text AS scopeText,',
+      'l.source_name AS sourceName, l.revision_count AS revisionCount,',
+      'l.reviewed_count AS reviewedCount, l.skipped_count AS skippedCount,',
+      'l.p1_count AS p1Count, l.p2_count AS p2Count, l.p3_count AS p3Count,',
+      'l.sync_mode AS syncMode, l.imported_at AS importedAt,',
+      'l.updated_at AS updatedAt, l.archived_at AS archivedAt',
+      'FROM review_logs l',
+      `WHERE ${where.join(' AND ')}`,
+      'ORDER BY l.log_date DESC, l.id DESC',
+      'LIMIT ?',
     ].join(' '),
+    values,
+  );
+
+  return toPageResult(rows, limit);
+}
+
+async function queryIssuePage(
+  filters: IssueListFilters,
+  scope: ReviewScope,
+  limit: 20 | 50,
+  keyword: string,
+  useLike: boolean,
+): Promise<PageResult<ReviewIssueSummary>> {
+  const values: SqlValue[] = [];
+  const sortExpression = `COALESCE(i.status_updated_at, '${ISSUE_CURSOR_FLOOR}')`;
+  const where = [
+    scope === 'active' ? 'l.archived_at IS NULL' : 'l.archived_at IS NOT NULL',
+    'i.source_current = 1',
+  ];
+  addReviewDateFilters(where, values, filters);
+  if (filters.status) {
+    where.push('i.status = ?');
+    values.push(filters.status);
+  }
+  if (filters.severity) {
+    where.push('i.severity = ?');
+    values.push(filters.severity);
+  }
+  if (filters.author?.trim()) {
+    where.push(
+      'EXISTS (SELECT 1 FROM review_revisions r WHERE r.review_id = l.id AND r.author LIKE ? ESCAPE \'\\\')',
+    );
+    values.push(toLikePattern(filters.author.trim()));
+  }
+  if (Number.isInteger(filters.revision)) {
+    where.push('i.related_revisions LIKE ? ESCAPE \'\\\'');
+    values.push(toLikePattern(String(filters.revision)));
+  }
+  addIssueKeywordFilter(where, values, keyword, useLike);
+
+  if (filters.cursor) {
+    const cursor = decodePageCursor(filters.cursor);
+    where.push(
+      `(${sortExpression} < ? OR (${sortExpression} = ? AND i.id < ?))`,
+    );
+    values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+  }
+  values.push(limit + 1);
+
+  const rows = await all<ReviewIssueSummaryRow>(
+    [
+      'SELECT i.id, i.review_id AS reviewId, i.issue_key AS issueKey,',
+      'i.severity, i.title, i.related_revisions AS relatedRevisions,',
+      'i.status, i.status_note AS statusNote,',
+      'i.status_updated_at AS statusUpdatedAt,',
+      `${sortExpression} AS cursorUpdatedAt,`,
+      'i.source_current AS sourceCurrent, i.version,',
+      'l.log_date AS logDate, l.title AS reviewTitle,',
+      "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS authors",
+      'FROM review_issues i JOIN review_logs l ON l.id = i.review_id',
+      `WHERE ${where.join(' AND ')}`,
+      `ORDER BY ${sortExpression} DESC, i.id DESC`,
+      'LIMIT ?',
+    ].join(' '),
+    values,
+  );
+
+  return toPageResult(rows, limit);
+}
+
+function addReviewDateFilters(
+  where: string[],
+  values: SqlValue[],
+  filters: Pick<ReviewListFilters, 'fromDate' | 'toDate'>,
+): void {
+  if (filters.fromDate?.trim()) {
+    where.push('l.log_date >= ?');
+    values.push(filters.fromDate.trim());
+  }
+  if (filters.toDate?.trim()) {
+    where.push('l.log_date <= ?');
+    values.push(filters.toDate.trim());
+  }
+}
+
+function addReviewRevisionFilters(
+  where: string[],
+  values: SqlValue[],
+  filters: Pick<ReviewListFilters, 'author' | 'revision'>,
+): void {
+  const revisionWhere = ['r.review_id = l.id'];
+  if (filters.author?.trim()) {
+    revisionWhere.push("r.author LIKE ? ESCAPE '\\'");
+    values.push(toLikePattern(filters.author.trim()));
+  }
+  if (Number.isInteger(filters.revision)) {
+    revisionWhere.push('r.revision = ?');
+    values.push(filters.revision!);
+  }
+  if (revisionWhere.length > 1) {
+    where.push(
+      `EXISTS (SELECT 1 FROM review_revisions r WHERE ${revisionWhere.join(' AND ')})`,
+    );
+  }
+}
+
+function addReviewIssueFilters(
+  where: string[],
+  values: SqlValue[],
+  filters: Pick<ReviewListFilters, 'severity' | 'status'>,
+): void {
+  const issueWhere = ['i.review_id = l.id', 'i.source_current = 1'];
+  if (filters.severity) {
+    issueWhere.push('i.severity = ?');
+    values.push(filters.severity);
+  }
+  if (filters.status) {
+    issueWhere.push('i.status = ?');
+    values.push(filters.status);
+  }
+  if (issueWhere.length > 2) {
+    where.push(
+      `EXISTS (SELECT 1 FROM review_issues i WHERE ${issueWhere.join(' AND ')})`,
+    );
+  }
+}
+
+function addReviewKeywordFilter(
+  where: string[],
+  values: SqlValue[],
+  keyword: string,
+  useLike: boolean,
+): void {
+  if (!keyword) return;
+  if (!useLike) {
+    where.push(
+      'l.id IN (SELECT review_id FROM review_search WHERE review_search MATCH ?)',
+    );
+    values.push(keyword);
+    return;
+  }
+
+  const pattern = toLikePattern(keyword);
+  where.push(
+    [
+      '(l.title LIKE ? ESCAPE \'\\\'',
+      'OR l.overview LIKE ? ESCAPE \'\\\'',
+      'OR l.scope_text LIKE ? ESCAPE \'\\\'',
+      'OR EXISTS (SELECT 1 FROM review_revisions r',
+      'WHERE r.review_id = l.id AND (r.author LIKE ? ESCAPE \'\\\'',
+      'OR r.description LIKE ? ESCAPE \'\\\'',
+      'OR CAST(r.revision AS TEXT) LIKE ? ESCAPE \'\\\'))',
+      'OR EXISTS (SELECT 1 FROM review_issues i',
+      'WHERE i.review_id = l.id AND (i.title LIKE ? ESCAPE \'\\\'',
+      'OR i.detail LIKE ? ESCAPE \'\\\'',
+      'OR COALESCE(i.status_note, \'\') LIKE ? ESCAPE \'\\\')))',
+    ].join(' '),
+  );
+  values.push(...Array<SqlValue>(9).fill(pattern));
+}
+
+function addIssueKeywordFilter(
+  where: string[],
+  values: SqlValue[],
+  keyword: string,
+  useLike: boolean,
+): void {
+  if (!keyword) return;
+  if (!useLike) {
+    where.push(
+      'l.id IN (SELECT review_id FROM review_search WHERE review_search MATCH ?)',
+    );
+    values.push(keyword);
+    return;
+  }
+
+  const pattern = toLikePattern(keyword);
+  where.push(
+    [
+      '(l.title LIKE ? ESCAPE \'\\\'',
+      'OR l.overview LIKE ? ESCAPE \'\\\'',
+      'OR l.scope_text LIKE ? ESCAPE \'\\\'',
+      'OR i.title LIKE ? ESCAPE \'\\\'',
+      'OR i.detail LIKE ? ESCAPE \'\\\'',
+      'OR i.related_revisions LIKE ? ESCAPE \'\\\'',
+      'OR COALESCE(i.status_note, \'\') LIKE ? ESCAPE \'\\\'',
+      'OR EXISTS (SELECT 1 FROM review_revisions r',
+      'WHERE r.review_id = l.id AND (r.author LIKE ? ESCAPE \'\\\'',
+      'OR r.description LIKE ? ESCAPE \'\\\'',
+      'OR CAST(r.revision AS TEXT) LIKE ? ESCAPE \'\\\')))',
+    ].join(' '),
+  );
+  values.push(...Array<SqlValue>(10).fill(pattern));
+}
+
+function toPageResult<
+  T extends { id: number; cursorUpdatedAt: string },
+>(rows: T[], limit: 20 | 50): PageResult<Omit<T, 'cursorUpdatedAt'>> {
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map(withoutCursorField);
+  const last = pageRows.at(-1);
+  return {
+    items,
+    hasMore,
+    nextCursor:
+      hasMore && last
+        ? encodePageCursor({ updatedAt: last.cursorUpdatedAt, id: last.id })
+        : null,
+  };
+}
+
+function withoutCursorField<T extends { cursorUpdatedAt: string }>(
+  row: T,
+): Omit<T, 'cursorUpdatedAt'> {
+  const item = { ...row } as Omit<T, 'cursorUpdatedAt'> & {
+    cursorUpdatedAt?: string;
+  };
+  delete item.cursorUpdatedAt;
+  return item;
+}
+
+function normalizeScope(scope: ReviewScope | undefined): ReviewScope {
+  if (scope === undefined) return 'active';
+  if (scope !== 'active' && scope !== 'archived') {
+    throw new Error('审查范围无效。');
+  }
+  return scope;
+}
+
+function normalizeRepositoryPageSize(value: unknown): 20 | 50 {
+  return Number(value) > 50 ? normalizePageSize(50) : normalizePageSize(value);
+}
+
+function toLikePattern(value: string): string {
+  return `%${value.replace(/([%_\\])/g, '\\$1')}%`;
+}
+
+function isFtsQueryError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = `${error.message} ${(error as Error & { cause?: unknown }).cause ?? ''}`.toLowerCase();
+  return (
+    message.includes('fts5') ||
+    message.includes('match') ||
+    message.includes('syntax') ||
+    message.includes('unterminated') ||
+    message.includes('malformed')
   );
 }
 
@@ -427,7 +803,7 @@ export async function getReviewDetail(id: number): Promise<ReviewDetail | null> 
       'skipped_count AS skippedCount, p1_count AS p1Count,',
       'p2_count AS p2Count, p3_count AS p3Count,',
       'sync_mode AS syncMode, imported_at AS importedAt,',
-      'updated_at AS updatedAt',
+      'updated_at AS updatedAt, archived_at AS archivedAt',
       'FROM review_logs WHERE id = ?',
     ].join(' '),
     [id],
@@ -639,7 +1015,7 @@ export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
       'skipped_count AS skippedCount, p1_count AS p1Count,',
       'p2_count AS p2Count, p3_count AS p3Count,',
       'sync_mode AS syncMode, imported_at AS importedAt,',
-      'updated_at AS updatedAt',
+      'updated_at AS updatedAt, archived_at AS archivedAt',
       'FROM review_logs WHERE id = ?',
     ].join(' '),
     [reviewId],
