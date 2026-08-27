@@ -22,8 +22,8 @@ export default async function Home() {
             </span>
           </a>
           <nav className="flex items-center gap-2 text-sm">
-            <a href="#history" className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
-              日志归档
+            <a href="/archive" className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
+              归档库
             </a>
             <a
               href="/admin"

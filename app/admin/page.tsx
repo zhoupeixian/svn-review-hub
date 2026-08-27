@@ -1,13 +1,16 @@
 import { requireChatGPTUser } from '@/app/chatgpt-auth';
 import UploadForm from '@/app/admin/upload-form';
-import { allowAdministrator, getReviewSummaries } from '@/lib/reviews';
+import { allowAdministrator, getReviewPage } from '@/lib/reviews';
+import ArchiveManager from './archive-manager';
 
 export const dynamic = 'force-dynamic';
 
 export default async function AdminPage() {
   const user = await requireChatGPTUser('/admin');
   const isAdmin = await allowAdministrator(user);
-  const reviews = isAdmin ? await getReviewSummaries() : [];
+  const [activePage, archivedPage] = isAdmin
+    ? await Promise.all([getReviewPage({ scope: 'active' }), getReviewPage({ scope: 'archived' })])
+    : [{ items: [], nextCursor: null, hasMore: false }, { items: [], nextCursor: null, hasMore: false }];
 
   if (!isAdmin) {
     return (
@@ -28,8 +31,6 @@ export default async function AdminPage() {
       </main>
     );
   }
-
-  const latest = reviews[0] ?? null;
 
   return (
     <main className="min-h-screen bg-[#f6f7f3] text-[#17211d]">
@@ -54,8 +55,8 @@ export default async function AdminPage() {
         </p>
 
         <div className="mt-7 grid gap-4 sm:grid-cols-3">
-          <StatusCard label="已归档日志" value={reviews.length + ' 份'} />
-          <StatusCard label="最近审查日期" value={latest?.logDate ?? '暂无'} />
+          <StatusCard label="已归档日志" value={archivedPage.items.length + ' 份'} />
+          <StatusCard label="最近审查日期" value={activePage.items[0]?.logDate ?? '暂无'} />
           <StatusCard label="自动同步状态" value="部署后启用" />
         </div>
 
@@ -69,6 +70,8 @@ export default async function AdminPage() {
           </div>
           <UploadForm />
         </section>
+
+        <ArchiveManager initialActive={activePage} initialArchived={archivedPage} />
 
         <section className="mt-8 rounded-3xl border border-[#d8e4d9] bg-[#edf6ee] p-6 sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#4a8066]">每日自动同步</p>
