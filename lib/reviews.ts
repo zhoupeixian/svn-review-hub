@@ -3,6 +3,7 @@ import type { ChatGPTUser } from '@/app/chatgpt-auth';
 import {
   type ParsedIssue,
   type ParsedRevision,
+  normalizeRelatedRevisions,
   parseReviewMarkdown,
 } from '@/lib/review-parser';
 import {
@@ -78,6 +79,14 @@ export type ReviewDetail = ReviewSummary & {
   markdown: string;
   revisions: ParsedRevision[];
   issues: ParsedIssue[];
+};
+
+export type ReviewIngestionResult = ReviewSummary & {
+  ingestion: {
+    createdIssueCount: number;
+    updatedIssueCount: number;
+    parsedIssueCount: number;
+  };
 };
 
 type ReviewRow = ReviewSummary & {
@@ -861,7 +870,9 @@ type IngestInput = {
   syncMode: 'automation' | 'manual';
 };
 
-export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
+export async function ingestReview(
+  input: IngestInput,
+): Promise<ReviewIngestionResult> {
   const markdown = input.markdown.replace(/^\uFEFF/, '');
   if (!markdown.trim()) throw new Error('日志文件为空。');
   if (new TextEncoder().encode(markdown).byteLength > 2_000_000) {
@@ -897,115 +908,133 @@ export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
     'SELECT id FROM review_logs WHERE source_key = ?',
     [sourceKey],
   );
-  let reviewId: number;
+  const existingIssues = existing
+    ? await all<IssueIdentityRow>(
+        `SELECT id, review_id AS reviewId, issue_key AS issueKey,
+                severity, title, related_revisions AS relatedRevisions
+         FROM review_issues
+         WHERE review_id = ? AND issue_key IS NOT NULL`,
+        [existing.id],
+      )
+    : [];
+  const existingIssueKeys = new Set(
+    existingIssues.map((issue) => issue.issueKey!),
+  );
+  const existingKeyByIdentity = new Map(
+    existingIssues.map((issue) => [issueStableKey(issue), issue.issueKey!]),
+  );
+  const issuesByKey = new Map<string, ParsedIssue>();
+  for (const issue of parsed.issues) {
+    const identity = issueStableKey(issue);
+    issuesByKey.set(existingKeyByIdentity.get(identity) ?? identity, issue);
+  }
+  const currentIssues = [...issuesByKey.entries()];
+  const createdIssueCount = currentIssues.filter(
+    ([issueKey]) => !existingIssueKeys.has(issueKey),
+  ).length;
+  const updatedIssueCount = currentIssues.length - createdIssueCount;
 
-  if (existing) {
-    reviewId = existing.id;
-    await DB.batch([
-      DB.prepare('DELETE FROM review_revisions WHERE review_id = ?').bind(reviewId),
-      DB.prepare('DELETE FROM review_issues WHERE review_id = ?').bind(reviewId),
-      DB.prepare(
-        [
-          'UPDATE review_logs SET log_date = ?, source_name = ?,',
-          'source_hash = ?, content_object_key = ?, title = ?, overview = ?,',
-          'scope_text = ?, revision_count = ?, reviewed_count = ?,',
-          'skipped_count = ?, p1_count = ?, p2_count = ?, p3_count = ?,',
-          'sync_mode = ?, imported_by = ?, updated_at = ? WHERE id = ?',
-        ].join(' '),
-      ).bind(
-        parsed.logDate,
-        sourceName,
-        sourceHash,
-        contentObjectKey,
-        parsed.title,
-        parsed.overview,
-        parsed.scopeText,
-        parsed.revisionCount,
-        parsed.reviewedCount,
-        parsed.skippedCount,
-        parsed.p1Count,
-        parsed.p2Count,
-        parsed.p3Count,
-        input.syncMode,
-        input.importedBy.slice(0, 255),
-        now,
-        reviewId,
-      ),
-    ]);
-  } else {
-    const result = await DB.prepare(
+  const statements: D1PreparedStatement[] = [
+    DB.prepare(
       [
         'INSERT INTO review_logs (',
         'log_date, source_key, source_name, source_hash, content_object_key,',
         'title, overview, scope_text, revision_count, reviewed_count, skipped_count,',
         'p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at, updated_at',
         ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'ON CONFLICT(source_key) DO UPDATE SET',
+        'log_date = excluded.log_date, source_name = excluded.source_name,',
+        'source_hash = excluded.source_hash, content_object_key = excluded.content_object_key,',
+        'title = excluded.title, overview = excluded.overview,',
+        'scope_text = excluded.scope_text, revision_count = excluded.revision_count,',
+        'reviewed_count = excluded.reviewed_count, skipped_count = excluded.skipped_count,',
+        'p1_count = excluded.p1_count, p2_count = excluded.p2_count,',
+        'p3_count = excluded.p3_count, sync_mode = excluded.sync_mode,',
+        'imported_by = excluded.imported_by, updated_at = excluded.updated_at',
       ].join(' '),
-    )
-      .bind(
-        parsed.logDate,
+    ).bind(
+      parsed.logDate,
+      sourceKey,
+      sourceName,
+      sourceHash,
+      contentObjectKey,
+      parsed.title,
+      parsed.overview,
+      parsed.scopeText,
+      parsed.revisionCount,
+      parsed.reviewedCount,
+      parsed.skippedCount,
+      parsed.p1Count,
+      parsed.p2Count,
+      parsed.p3Count,
+      input.syncMode,
+      input.importedBy.slice(0, 255),
+      now,
+      now,
+    ),
+    DB.prepare(
+      'DELETE FROM review_revisions WHERE review_id = (SELECT id FROM review_logs WHERE source_key = ?)',
+    ).bind(sourceKey),
+    DB.prepare(
+      'UPDATE review_issues SET source_current = 0 WHERE review_id = (SELECT id FROM review_logs WHERE source_key = ?)',
+    ).bind(sourceKey),
+    ...parsed.revisions.map((revision) =>
+      DB.prepare(
+        [
+          'INSERT INTO review_revisions (',
+          'review_id, revision, author, committed_at, description, conclusion',
+          ') SELECT id, ?, ?, ?, ?, ? FROM review_logs WHERE source_key = ?',
+        ].join(' '),
+      ).bind(
+        revision.revision,
+        revision.author,
+        revision.committedAt,
+        revision.description,
+        revision.conclusion,
         sourceKey,
-        sourceName,
-        sourceHash,
-        contentObjectKey,
-        parsed.title,
-        parsed.overview,
-        parsed.scopeText,
-        parsed.revisionCount,
-        parsed.reviewedCount,
-        parsed.skippedCount,
-        parsed.p1Count,
-        parsed.p2Count,
-        parsed.p3Count,
-        input.syncMode,
-        input.importedBy.slice(0, 255),
-        now,
-        now,
-      )
-      .run();
-    reviewId = Number(result.meta.last_row_id);
-  }
-
-  if (parsed.revisions.length) {
-    await DB.batch(
-      parsed.revisions.map((revision) =>
-        DB.prepare(
-          [
-            'INSERT INTO review_revisions (',
-            'review_id, revision, author, committed_at, description, conclusion',
-            ') VALUES (?, ?, ?, ?, ?, ?)',
-          ].join(' '),
-        ).bind(
-          reviewId,
-          revision.revision,
-          revision.author,
-          revision.committedAt,
-          revision.description,
-          revision.conclusion,
-        ),
       ),
+    ),
+    ...currentIssues.map(([issueKey, issue]) =>
+      DB.prepare(
+        [
+          'INSERT INTO review_issues (',
+          'review_id, issue_key, severity, title, related_revisions, detail,',
+          'status, status_note, status_updated_at, source_current, version',
+          ") SELECT id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
+          'FROM review_logs WHERE source_key = ?',
+          'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
+          'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
+          'related_revisions = excluded.related_revisions, detail = excluded.detail,',
+          'source_current = 1',
+        ].join(' '),
+      ).bind(
+        issueKey,
+        issue.severity,
+        issue.title,
+        issue.relatedRevisions,
+        issue.detail,
+        sourceKey,
+      ),
+    ),
+  ];
+
+  try {
+    await DB.batch(statements);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `D1 原子更新失败，未提交部分结构化变更：${message}`,
+      { cause: error },
     );
   }
 
-  if (parsed.issues.length) {
-    await DB.batch(
-      parsed.issues.map((issue) =>
-        DB.prepare(
-          [
-            'INSERT INTO review_issues (',
-            'review_id, severity, title, related_revisions, detail',
-            ') VALUES (?, ?, ?, ?, ?)',
-          ].join(' '),
-        ).bind(
-          reviewId,
-          issue.severity,
-          issue.title,
-          issue.relatedRevisions,
-          issue.detail,
-        ),
-      ),
-    );
-  }
+  const identity = await first<{ id: number }>(
+    'SELECT id FROM review_logs WHERE source_key = ?',
+    [sourceKey],
+  );
+  if (!identity) throw new Error('日志已写入，但未能读取导入标识。');
+  const reviewId = identity.id;
+  await rebuildReviewSearch(reviewId);
 
   const review = await first<ReviewSummary>(
     [
@@ -1021,7 +1050,22 @@ export async function ingestReview(input: IngestInput): Promise<ReviewSummary> {
     [reviewId],
   );
   if (!review) throw new Error('日志已写入，但未能读取导入结果。');
-  return review;
+  return {
+    ...review,
+    ingestion: {
+      createdIssueCount,
+      updatedIssueCount,
+      parsedIssueCount: currentIssues.length,
+    },
+  };
+}
+
+function issueStableKey(
+  issue: { severity: string; title: string; relatedRevisions: string },
+): string {
+  return normalizeIssueKey(
+    `${issue.severity.toUpperCase()}:${issue.title}:${normalizeRelatedRevisions(issue.relatedRevisions)}`,
+  );
 }
 
 export async function allowAdministrator(user: ChatGPTUser): Promise<boolean> {
