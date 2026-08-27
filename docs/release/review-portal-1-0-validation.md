@@ -37,3 +37,13 @@ Workers 测试必须使用 `--mode workers`，以提供 D1、R2 与 `cloudflare:
 - 匿名状态更新没有可靠的操作者身份；系统仅记录无身份的时间线事件，并对客户端哈希实施短期频率限制。
 - 测试必须按 Node/jsdom 与 Workers 两类运行时分流，不能以默认 Node 全量命令判定 Workers 专用测试失败。
 - 本次未执行线上部署，项目配置未提供已部署站点地址；生产站点的原生导航、真实匿名提交、管理员归档及归档浏览须在部署后按发布后清单复验。
+
+## 最终回归复核
+
+最终整体代码审查后的修复已在 2026-08-27 复核：问题/归档筛选首屏重置与请求竞态保护、归档详情只读、CSV 空白前缀公式防护、FTS 请求期初始化、状态事件原子写入及同步健康 Revision 归属均有对应回归测试。
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm run test -- --run test/issue-lifecycle.test.ts test/review-query.test.ts test/ui-current-review-flow.test.tsx test/ui-archive-flow.test.tsx` | 4 个文件、20 项通过 |
+| `npm run test -- --mode workers --run test/archive-api.test.ts test/issue-status-api.test.ts test/issues-export.test.ts test/review-ingestion.test.ts test/review-repository-query.test.ts test/review-schema-contract.test.ts test/sync-health.test.ts` | 7 个文件、28 项通过 |
+| `npm run lint`、`npx tsc --noEmit`、`npm run build`、`git diff --check` | 均通过 |
