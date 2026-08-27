@@ -1,15 +1,19 @@
 import { parseReviewFilters } from '@/app/api/reviews/route';
-import { getIssueExportRows, toCsv } from '@/lib/reviews';
+import { getIssueExportRows, toIssueWorkbook } from '@/lib/reviews';
 
 export async function GET(request: Request) {
   try {
     const filters = parseReviewFilters(new URL(request.url));
-    const csv = '\uFEFF' + toCsv(await getIssueExportRows(filters));
+    const workbook = toIssueWorkbook(
+      await getIssueExportRows(filters),
+      new URL(request.url).origin,
+    );
     const date = new Date().toISOString().slice(0, 10);
-    return new Response(csv, {
+    const filename = `ZHERP-审查问题-${date}.xlsx`;
+    return new Response(Uint8Array.from(workbook).buffer, {
       headers: {
-        'content-type': 'text/csv; charset=utf-8',
-        'content-disposition': `attachment; filename="issues-${date}.csv"`,
+        'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'content-disposition': `attachment; filename="ZHERP-review-issues-${date}.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`,
       },
     });
   } catch (error) {

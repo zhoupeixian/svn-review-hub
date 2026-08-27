@@ -3,6 +3,7 @@
 import { env } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
+import * as XLSX from 'xlsx-js-style';
 vi.mock('@/app/chatgpt-auth', () => ({ getChatGPTUser: vi.fn(async () => null) }));
 import { GET as exportIssues } from '@/app/api/issues/export/route';
 import { GET as exportReviews } from '@/app/api/reviews/export/route';
@@ -10,7 +11,7 @@ import { ingestReview, toCsv } from '@/lib/reviews';
 
 const DB = (env as { DB: D1Database }).DB;
 
-describe.sequential('CSV 导出', () => {
+describe.sequential('问题导出', () => {
   beforeEach(async () => {
     await DB.batch([
       DB.prepare('DELETE FROM review_issue_events'), DB.prepare('DELETE FROM review_issues'),
@@ -19,7 +20,7 @@ describe.sequential('CSV 导出', () => {
     ]);
   });
 
-  it('问题导出复用活动筛选，不混入归档问题并防护 CSV 公式', async () => {
+  it('问题导出为可分派的 Excel 工作表，不混入归档问题并防护公式', async () => {
     const markdown = `# 导出日志\n日期：2026-08-27\n审查范围：共 1 个 revision，实际审查 1 个，跳过 0 个\n总体结论：保留 1 个 P1\n\n| Revision | 提交人 | 提交时间 | 说明 | 结论 |\n| --- | --- | --- | --- | --- |\n| 100 | alice | 2026-08-27 09:00 | 提交 | 已审查 |\n\n### P1\n\n#### 公式,标题\n相关 revision：100\n\n详情\n`;
     await ingestReview({ markdown, sourceKey: 'export-active', sourceName: 'export.md', importedBy: 'test', syncMode: 'automation' });
     const issue = await DB.prepare('SELECT id, review_id AS reviewId FROM review_issues LIMIT 1').first<{ id: number; reviewId: number }>();
@@ -29,14 +30,18 @@ describe.sequential('CSV 导出', () => {
     await DB.prepare('UPDATE review_issues SET status_note = ? WHERE id = ?').bind('=SUM(A1),\n中文 "说明"', currentIssue!.id).run();
 
     const response = await exportIssues(new Request('https://review.test/api/issues/export?severity=P1'));
-    const bytes = new Uint8Array(await response.clone().arrayBuffer());
-    const body = await response.text();
     expect(response.status).toBe(200);
-    expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
-    expect(response.headers.get('content-type')).toContain('text/csv; charset=utf-8');
-    expect(body).toContain('问题键');
-    expect(body).not.toContain('export-active');
-    expect(body).toContain("'=SUM(A1),\n中文 \"\"说明\"\"");
+    expect(response.headers.get('content-type')).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const workbook = XLSX.read(await response.arrayBuffer(), { type: 'array' });
+    expect(workbook.SheetNames).toEqual(['问题跟进']);
+    const worksheet = workbook.Sheets['问题跟进'];
+    expect(XLSX.utils.sheet_to_json(worksheet, { header: 1 })).toEqual(expect.arrayContaining([
+      ['严重级别', '状态', '问题标题', '关联 Revision', '提交人', '日志日期', '来源日志', '处理说明', '最后更新', '详情链接'],
+      expect.arrayContaining(['P1', '待处理', '公式,标题']),
+    ]));
+    expect(worksheet.J2.l?.Target).toBe('https://review.test/reviews/2#issue-2');
+    expect(worksheet.H2.v).toBe("'=SUM(A1),\n中文 \"说明\"");
+    expect(worksheet['!autofilter']?.ref).toBe('A1:J2');
   });
 
   it('日志导出不读取 R2 原文且支持归档范围', async () => {
@@ -53,7 +58,7 @@ describe.sequential('CSV 导出', () => {
   it('公式防护忽略公式前的空白字符', () => {
     const row = {
       issueKey: 'issue', status: 'open', updatedAt: '', severity: 'P1', title: '标题',
-      revision: '', author: '', logDate: '', detailUrl: '', statusNote: '',
+      revision: '', author: '', logDate: '', sourceName: '', detailUrl: '', statusNote: '',
     };
     const csv = toCsv([
       { ...row, statusNote: ' =SUM(A1)' },

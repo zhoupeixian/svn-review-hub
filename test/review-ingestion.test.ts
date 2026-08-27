@@ -7,6 +7,7 @@ import {
   ingestReview,
   isSyncRequestAuthorized,
 } from '@/lib/reviews';
+import { parseReviewMarkdown } from '@/lib/review-parser';
 
 type TestEnv = {
   DB: D1Database;
@@ -34,6 +35,18 @@ const SOURCE_KEY = '2026-08-27/svn审查日志-2026-08-27.md';
 const SYNC_KEY = 'workers-review-sync-key';
 
 describe('审查日志合并导入', () => {
+  it('识别可审查和按规则跳过的审查范围文案', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-27',
+      '审查范围：共 24 个 revision，其中 22 个可审查，2 个按默认规则跳过',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 24,
+      reviewedCount: 22,
+      skippedCount: 2,
+    });
+  });
+
   beforeEach(async () => {
     await DB.batch([
       DB.prepare('DELETE FROM review_issue_events'),

@@ -6,7 +6,7 @@
 
 **Architecture:** 保持 D1/R2、匿名状态更新、归档和服务端筛选不变。新增 Worker 兼容的 XLSX 写出层，所有导出数据继续从 `getIssueExportRows` 读取；使用根元素主题令牌和一个小型客户端切换器统一全站视觉，页面通过共享筛选/卡片样式收敛信息层级。
 
-**Tech Stack:** Next.js/Vinext、React、TypeScript、Vitest（Node/jsdom 与 Workers 分开运行）、`xlsx-js-style`（Workers 兼容的 XLSX 二进制、样式与冻结行写出）、Tailwind CSS 4、Cloudflare Workers/D1/R2。
+**Tech Stack:** Next.js/Vinext、React、TypeScript、Vitest（Node/jsdom 与 Workers 分开运行）、`xlsx-js-style`（Workers 兼容的 XLSX 二进制与单元格样式写出）、Tailwind CSS 4、Cloudflare Workers/D1/R2。
 
 **Spec:** `docs/superpowers/specs/2026-08-27-review-portal-1-1-experience-design.md`
 
@@ -51,7 +51,7 @@
   });
   ```
 
-  在 `test/issues-export.test.ts` 用已导入的当前问题调用导出路由，使用 `XLSX.read(await response.arrayBuffer())` 断言：工作表 `问题跟进` 存在，首行是 `严重级别` 至 `详情链接` 的十列，数据行状态为 `待处理`，详情链接单元格有 `l.Target`，且 `!autofilter.ref` 和 `!freeze`（或等价 workbook 视图冻结配置）存在。再写一条处理说明为 ` =SUM(A1)` 的记录，断言导出值仍以单引号文本前缀开始。
+  在 `test/issues-export.test.ts` 用已导入的当前问题调用导出路由，使用 `XLSX.read(await response.arrayBuffer())` 断言：工作表 `问题跟进` 存在，首行是 `严重级别` 至 `详情链接` 的十列，数据行状态为 `待处理`，详情链接单元格有 `l.Target`，且 `!autofilter.ref` 存在。再写一条处理说明为 ` =SUM(A1)` 的记录，断言导出值仍以单引号文本前缀开始。
 
 - [ ] **Step 2: 运行这两个测试，确认新契约尚未满足。**
 
@@ -91,7 +91,7 @@
   ];
   ```
 
-  为首行设置加粗、主题底色和浅色文字；为“问题标题”“处理说明”设置换行；将首行冻结通过 `worksheet['!freeze'] = { xSplit: 0, ySplit: 1 }` 表达。二进制写出使用 `XLSX.write(workbook, { type: 'array', bookType: 'xlsx' })`，不使用 Node 文件系统 API。
+  为首行设置加粗、主题底色和浅色文字；为“问题标题”“处理说明”设置换行。二进制写出使用 `XLSX.write(workbook, { type: 'array', bookType: 'xlsx' })`，不使用 Node 文件系统 API。
 
 - [ ] **Step 5: 将导出路由和前端链接改为 XLSX。**
 

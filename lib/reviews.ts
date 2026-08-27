@@ -7,10 +7,12 @@ import {
   parseReviewMarkdown,
 } from '@/lib/review-parser';
 import {
+  ISSUE_STATUS_LABELS,
   ISSUE_STATUSES,
   type IssueStatus,
   normalizeIssueKey,
 } from '@/lib/issue-lifecycle';
+import * as XLSX from 'xlsx-js-style';
 import {
   decodePageCursor,
   encodePageCursor,
@@ -105,6 +107,7 @@ export type ReviewExportRow = {
   revision: string;
   author: string;
   logDate: string;
+  sourceName: string;
   detailUrl: string;
 };
 
@@ -577,6 +580,7 @@ type IssueExportRowDb = {
   relatedRevisions: string;
   author: string;
   logDate: string;
+  sourceName: string;
   reviewId: number;
 };
 
@@ -600,7 +604,7 @@ export async function getIssueExportRows(filters: IssueListFilters = {}): Promis
     'i.status_updated_at AS statusUpdatedAt, l.updated_at AS updatedAt,',
     'i.severity, i.title, i.related_revisions AS relatedRevisions,',
     "COALESCE((SELECT group_concat(DISTINCT r.author) FROM review_revisions r WHERE r.review_id = l.id), '') AS author,",
-    'l.log_date AS logDate, l.id AS reviewId',
+    'l.log_date AS logDate, l.source_name AS sourceName, l.id AS reviewId',
     'FROM review_issues i JOIN review_logs l ON l.id = i.review_id',
     `WHERE i.id IN (${items.map(() => '?').join(',')})`,
   ].join(' '), items.map((item) => item.id));
@@ -618,6 +622,7 @@ export async function getIssueExportRows(filters: IssueListFilters = {}): Promis
       revision: row.relatedRevisions,
       author: row.author,
       logDate: row.logDate,
+      sourceName: row.sourceName,
       detailUrl: `/reviews/${row.reviewId}#issue-${row.id}`,
     }];
   });
@@ -635,7 +640,7 @@ export async function getReviewExportRows(filters: ReviewListFilters = {}): Prom
   const selected = items.slice(0, EXPORT_MAX_ROWS);
   if (!selected.length) return [];
   const rows = await all<IssueExportRowDb>([
-    'SELECT l.id AS reviewId, l.log_date AS logDate, l.updated_at AS updatedAt,',
+    'SELECT l.id AS reviewId, l.log_date AS logDate, l.source_name AS sourceName, l.updated_at AS updatedAt,',
     'i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
     'i.status_updated_at AS statusUpdatedAt, i.severity, i.title,',
     'i.related_revisions AS relatedRevisions,',
@@ -656,7 +661,7 @@ export async function getReviewExportRows(filters: ReviewListFilters = {}): Prom
       return [{
         issueKey: '', status: '', statusNote: '', updatedAt: review.updatedAt,
         severity: '', title: review.title, revision: '', author: '',
-        logDate: review.logDate, detailUrl: `/reviews/${review.id}`,
+        logDate: review.logDate, sourceName: review.sourceName, detailUrl: `/reviews/${review.id}`,
       }];
     }
     return reviewRows.map((row) => ({
@@ -669,6 +674,7 @@ export async function getReviewExportRows(filters: ReviewListFilters = {}): Prom
       revision: row.relatedRevisions ?? '',
       author: row.author,
       logDate: row.logDate,
+      sourceName: row.sourceName,
       detailUrl: row.id ? `/reviews/${row.reviewId}#issue-${row.id}` : `/reviews/${row.reviewId}`,
     }));
   }).slice(0, EXPORT_MAX_ROWS);
@@ -682,6 +688,66 @@ export function toCsv(rows: ReviewExportRow[]): string {
     row.issueKey, row.status, row.statusNote, row.updatedAt, row.severity,
     row.title, row.revision, row.author, row.logDate, row.detailUrl,
   ])].map((line) => line.map(cell).join(',')).join('\r\n') + '\r\n';
+}
+
+export function toIssueWorkbook(rows: ReviewExportRow[], origin: string): Uint8Array {
+  const headers = ['严重级别', '状态', '问题标题', '关联 Revision', '提交人', '日志日期', '来源日志', '处理说明', '最后更新', '详情链接'];
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    headers,
+    ...rows.map((row) => [
+      protectSpreadsheetText(row.severity),
+      protectSpreadsheetText(ISSUE_STATUS_LABELS[row.status as IssueStatus] ?? row.status),
+      protectSpreadsheetText(row.title),
+      protectSpreadsheetText(row.revision),
+      protectSpreadsheetText(row.author),
+      protectSpreadsheetText(row.logDate),
+      protectSpreadsheetText(row.sourceName),
+      protectSpreadsheetText(row.statusNote),
+      protectSpreadsheetText(row.updatedAt),
+      '打开详情',
+    ]),
+  ]);
+
+  const headerStyle = {
+    font: { bold: true, color: { rgb: 'FFFFFF' } },
+    fill: { fgColor: { rgb: '315C4B' } },
+    alignment: { vertical: 'center' },
+  };
+  for (let column = 0; column < headers.length; column += 1) {
+    const cell = worksheet[XLSX.utils.encode_cell({ r: 0, c: column })];
+    if (cell) cell.s = headerStyle;
+  }
+  for (let rowIndex = 1; rowIndex <= rows.length; rowIndex += 1) {
+    for (const column of [2, 7]) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: column })];
+      if (cell) cell.s = { alignment: { vertical: 'top', wrapText: true } };
+    }
+    const link = worksheet[XLSX.utils.encode_cell({ r: rowIndex, c: 9 })];
+    if (link) {
+      link.l = { Target: safeDetailUrl(rows[rowIndex - 1].detailUrl, origin) };
+      link.s = { font: { color: { rgb: '1D5B46' }, underline: true } };
+    }
+  }
+  worksheet['!autofilter'] = { ref: `A1:J${Math.max(rows.length + 1, 1)}` };
+  worksheet['!cols'] = [
+    { wch: 10 }, { wch: 12 }, { wch: 42 }, { wch: 18 }, { wch: 28 },
+    { wch: 13 }, { wch: 24 }, { wch: 42 }, { wch: 20 }, { wch: 14 },
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '问题跟进');
+  return new Uint8Array(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }));
+}
+
+function protectSpreadsheetText(value: string): string {
+  return /^\s*[=+\-@]/.test(value) ? `'${value}` : value;
+}
+
+function safeDetailUrl(path: string, origin: string): string {
+  if (!/^\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
+    throw new Error('导出详情链接无效。');
+  }
+  return new URL(path, origin).toString();
 }
 
 export async function getReviewPage(
