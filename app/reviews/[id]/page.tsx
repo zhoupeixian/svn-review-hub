@@ -1,5 +1,4 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,15 +40,15 @@ export default async function ReviewPage({ params }: Props) {
     <main className="min-h-screen bg-[#f6f7f3] text-[#17211d]">
       <header className="border-b border-[#dce4dc] bg-[#fdfefc]/95">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4 sm:px-8">
-          <Link href="/" className="flex items-center gap-3 text-sm font-bold text-[#245d46]">
+          <a href="/" className="flex items-center gap-3 text-sm font-bold text-[#245d46]">
             <span aria-hidden="true">←</span> 返回审查归档
-          </Link>
-          <Link
+          </a>
+          <a
             href="/admin"
             className="rounded-lg border border-[#c4d4c5] bg-white px-3 py-2 text-sm font-semibold text-[#245d46] hover:bg-[#edf4ee]"
           >
             管理入口
-          </Link>
+          </a>
         </div>
       </header>
 

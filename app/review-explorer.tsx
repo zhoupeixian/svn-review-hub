@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import type { ReviewSummary } from '@/lib/reviews';
 
@@ -144,12 +143,12 @@ export default function ReviewExplorer({ reviews }: Props) {
                 </div>
               </div>
               <div className="mt-5 border-t border-[#edf1ed] pt-4">
-                <Link
+                <a
                   href={'/reviews/' + review.id}
                   className="inline-flex items-center gap-1 text-sm font-bold text-[#1e6b4e] hover:text-[#124a35]"
                 >
                   打开审查日志 <span aria-hidden="true">→</span>
-                </Link>
+                </a>
               </div>
             </article>
           ))}

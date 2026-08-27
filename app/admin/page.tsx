@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { requireChatGPTUser } from '@/app/chatgpt-auth';
 import UploadForm from '@/app/admin/upload-form';
 import { allowAdministrator, getReviewSummaries } from '@/lib/reviews';
@@ -19,12 +18,12 @@ export default async function AdminPage() {
           <p className="mt-3 text-sm leading-6 text-[#617268]">
             你可以继续浏览团队公开的审查归档；上传和同步管理仅向已登记的管理员开放。
           </p>
-          <Link
+          <a
             href="/"
             className="mt-6 inline-flex rounded-lg bg-[#1e6349] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#174d39]"
           >
             返回日志归档
-          </Link>
+          </a>
         </section>
       </main>
     );
@@ -36,9 +35,9 @@ export default async function AdminPage() {
     <main className="min-h-screen bg-[#f6f7f3] text-[#17211d]">
       <header className="border-b border-[#dce4dc] bg-[#fdfefc]/95">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-4 sm:px-8">
-          <Link href="/" className="text-sm font-bold text-[#245d46]">
+          <a href="/" className="text-sm font-bold text-[#245d46]">
             ← 返回日志归档
-          </Link>
+          </a>
           <span className="rounded-full bg-[#eaf3eb] px-3 py-1.5 text-xs font-semibold text-[#38654c]">
             管理员：{user.displayName}
           </span>

@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import ReviewExplorer from '@/app/review-explorer';
 import { getReviewSummaries } from '@/lib/reviews';
 
@@ -12,7 +11,7 @@ export default async function Home() {
     <main className="min-h-screen bg-[#f6f7f3] text-[#17211d]">
       <header className="border-b border-[#dce4dc] bg-[#fdfefc]/95">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 sm:px-8">
-          <Link href="/" className="flex items-center gap-3">
+          <a href="/" className="flex items-center gap-3">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#1d5b46] text-sm font-black text-white">
               Z
             </span>
@@ -20,17 +19,17 @@ export default async function Home() {
               <span className="block text-sm font-bold tracking-tight">ZHERP</span>
               <span className="block text-xs text-[#66766d]">SVN 审查日志</span>
             </span>
-          </Link>
+          </a>
           <nav className="flex items-center gap-2 text-sm">
             <a href="#history" className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
               日志归档
             </a>
-            <Link
+            <a
               href="/admin"
               className="rounded-lg border border-[#b9cbbb] bg-white px-3 py-2 font-medium text-[#1d5b46] hover:bg-[#edf4ee]"
             >
               管理入口
-            </Link>
+            </a>
           </nav>
         </div>
       </header>
@@ -61,12 +60,12 @@ export default async function Home() {
                 <p className="mt-2 text-sm leading-6 text-[#5d6e64]">
                   {latest.reviewedCount} 个实际审查提交，{latest.p1Count} 个 P1、{latest.p2Count} 个 P2。
                 </p>
-                <Link
+                <a
                   href={'/reviews/' + latest.id}
                   className="mt-4 inline-flex items-center gap-1 text-sm font-bold text-[#1d6b4f] hover:text-[#134734]"
                 >
                   阅读完整日志 <span aria-hidden="true">→</span>
-                </Link>
+                </a>
               </>
             ) : (
               <p className="mt-3 text-sm leading-6 text-[#5d6e64]">
