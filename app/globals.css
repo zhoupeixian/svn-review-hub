@@ -1,0 +1,147 @@
+@import 'tailwindcss';
+
+:root {
+  --background: #f6f7f3;
+  --foreground: #17211d;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+::selection {
+  background: #c7e2cf;
+  color: #173a2b;
+}
+
+.review-markdown {
+  color: #344b3e;
+  font-size: 0.925rem;
+  line-height: 1.8;
+}
+
+.review-markdown h1,
+.review-markdown h2,
+.review-markdown h3,
+.review-markdown h4 {
+  color: #193a2c;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+
+.review-markdown h1 {
+  font-size: 1.65rem;
+  margin: 1.75rem 0 0.8rem;
+}
+
+.review-markdown h2 {
+  border-top: 1px solid #e4ece5;
+  font-size: 1.3rem;
+  margin: 2rem 0 0.75rem;
+  padding-top: 1.5rem;
+}
+
+.review-markdown h3 {
+  font-size: 1.08rem;
+  margin: 1.35rem 0 0.5rem;
+}
+
+.review-markdown h4 {
+  font-size: 1rem;
+  margin: 1.15rem 0 0.4rem;
+}
+
+.review-markdown p,
+.review-markdown ul,
+.review-markdown ol {
+  margin: 0.75rem 0;
+}
+
+.review-markdown ul,
+.review-markdown ol {
+  padding-left: 1.35rem;
+}
+
+.review-markdown ul {
+  list-style: disc;
+}
+
+.review-markdown ol {
+  list-style: decimal;
+}
+
+.review-markdown pre {
+  margin: 1rem 0;
+  overflow-x: auto;
+  border-radius: 0.75rem;
+  background: #19352a;
+  color: #e5f1e7;
+  padding: 1rem;
+}
+
+.review-markdown code {
+  border-radius: 0.35rem;
+  background: #edf3ed;
+  padding: 0.08rem 0.3rem;
+  color: #245c44;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.88em;
+}
+
+.review-markdown pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.review-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 1rem 0;
+  white-space: nowrap;
+}
+
+.review-markdown th,
+.review-markdown td {
+  border-bottom: 1px solid #dfe8e0;
+  padding: 0.65rem 0.8rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.review-markdown th {
+  background: #eff5ef;
+  color: #28523d;
+  font-weight: 700;
+}
+
+.review-markdown tr:last-child td {
+  border-bottom: 0;
+}
+
+.review-markdown blockquote {
+  border-left: 3px solid #8bb49a;
+  color: #5e7164;
+  margin: 1rem 0;
+  padding-left: 1rem;
+}
+
+.review-markdown a {
+  color: #1c6b4b;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
