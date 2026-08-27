@@ -111,6 +111,41 @@ describe('归档库与归档管理 UI', () => {
     expect(screen.queryByText('已归档日志')).toBeNull();
   });
 
+  it('连续快速应用筛选时旧响应不能覆盖最新结果、筛选和分页游标', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch');
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    fetchMock
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSecond = resolve; }));
+
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
+
+    fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'alice' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'bob' } });
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+
+    resolveSecond(new Response(JSON.stringify({
+      items: [{ ...archivedReview, id: 7, title: 'bob 归档' }], nextCursor: 'bob-next', hasMore: true,
+    }), { status: 200 }));
+    expect(await screen.findByText('bob 归档')).toBeTruthy();
+    expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('author=bob');
+
+    resolveFirst(new Response(JSON.stringify({
+      items: [{ ...archivedReview, id: 6, title: 'alice 归档' }], nextCursor: 'alice-next', hasMore: true,
+    }), { status: 200 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('alice 归档')).toBeNull();
+    expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('author=bob');
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ items: [], nextCursor: null, hasMore: false }), { status: 200 }));
+    await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
+    const nextUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+    expect(nextUrl).toContain('author=bob');
+    expect(nextUrl).toContain('cursor=bob-next');
+  });
+
   it('显式选择日志后先预览，确认时只提交预览令牌', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     fetchMock

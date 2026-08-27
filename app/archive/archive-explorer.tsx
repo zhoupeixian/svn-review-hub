@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ISSUE_STATUS_LABELS, ISSUE_STATUSES } from '../../lib/issue-lifecycle';
 import PagedLoadMore from '../components/paged-load-more';
 import type { PageResult, ReviewSummary } from '../../lib/reviews';
@@ -36,6 +36,7 @@ export default function ArchiveExplorer({
   const [copied, setCopied] = useState(false);
   const [activeFilters, setActiveFilters] = useState<ArchiveFilters>(() => ({ ...filters }));
   const [draftFilters, setDraftFilters] = useState<ArchiveFilters>(() => ({ ...filters }));
+  const requestId = useRef(0);
 
   function updateDraft(key: keyof ArchiveFilters, value: string) {
     setDraftFilters((current) => ({ ...current, [key]: value }));
@@ -43,6 +44,7 @@ export default function ArchiveExplorer({
 
   async function applyFilters() {
     const next = Object.fromEntries(Object.entries(draftFilters).filter(([, value]) => value)) as ArchiveFilters;
+    const request = ++requestId.current;
     setActiveFilters(next);
     const urlParams = new URLSearchParams({ scope: 'archived' });
     appendFilters(urlParams, next);
@@ -52,13 +54,15 @@ export default function ArchiveExplorer({
       const response = await fetch('/api/reviews?' + urlParams.toString());
       if (!response.ok) throw new Error();
       const page = await response.json() as PageResult<ReviewSummary>;
+      if (request !== requestId.current) return;
       setItems(page.items); setCursor(page.nextCursor); setHasMore(page.hasMore);
-    } catch { setError('未能加载归档日志，请稍后重试。'); }
-    finally { setLoading(false); }
+    } catch { if (request === requestId.current) setError('未能加载归档日志，请稍后重试。'); }
+    finally { if (request === requestId.current) setLoading(false); }
   }
 
   async function loadMore() {
     if (!cursor || loading) return;
+    const request = ++requestId.current;
     setLoading(true);
     setError('');
     try {
@@ -68,14 +72,12 @@ export default function ArchiveExplorer({
       const response = await fetch('/api/reviews?' + params.toString());
       if (!response.ok) throw new Error('加载失败');
       const page = await response.json() as PageResult<ReviewSummary>;
+      if (request !== requestId.current) return;
       setItems((current) => [...current, ...page.items]);
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
-    } catch {
-      setError('未能加载更多归档日志，请稍后重试。');
-    } finally {
-      setLoading(false);
-    }
+    } catch { if (request === requestId.current) setError('未能加载更多归档日志，请稍后重试。'); }
+    finally { if (request === requestId.current) setLoading(false); }
   }
 
   const shareParams = new URLSearchParams({ scope: 'archived' });
