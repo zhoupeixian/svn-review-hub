@@ -1,4 +1,5 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig(async ({ mode }) => {
@@ -7,12 +8,19 @@ export default defineConfig(async ({ mode }) => {
       test: {
         environment: 'node',
         environmentMatchGlobs: [['test/**/*.tsx', 'jsdom']],
+        include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
+        exclude: ['test/review-schema-contract.test.ts'],
       },
     };
   }
 
   const migrations = await readD1Migrations('./drizzle');
   return {
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('.', import.meta.url)),
+      },
+    },
     plugins: [
       cloudflareTest({
         miniflare: {

@@ -5,6 +5,7 @@ import {
   type ParsedRevision,
   parseReviewMarkdown,
 } from '@/lib/review-parser';
+import { ISSUE_STATUSES, normalizeIssueKey } from '@/lib/issue-lifecycle';
 
 type SqlValue = string | number | null;
 
@@ -44,6 +45,19 @@ type RuntimeEnv = {
 
 const schemaReady = new WeakMap<D1Database, Promise<void>>();
 
+type SchemaColumn = {
+  name: string;
+};
+
+type IssueIdentityRow = {
+  id: number;
+  reviewId: number;
+  issueKey: string | null;
+  severity: string;
+  title: string;
+  relatedRevisions: string;
+};
+
 function getRuntime(): RuntimeEnv {
   const runtime = env as unknown as RuntimeEnv;
   if (!runtime.DB || !runtime.FILES) {
@@ -58,7 +72,7 @@ export async function ensureReviewSchema(): Promise<void> {
   if (cached) return cached;
 
   const ready = (async () => {
-    const statements = [
+    const baseStatements = [
       [
         'CREATE TABLE IF NOT EXISTS review_logs (',
         'id INTEGER PRIMARY KEY AUTOINCREMENT,',
@@ -79,7 +93,8 @@ export async function ensureReviewSchema(): Promise<void> {
         'sync_mode TEXT NOT NULL,',
         'imported_by TEXT NOT NULL,',
         'imported_at TEXT NOT NULL,',
-        'updated_at TEXT NOT NULL',
+        'updated_at TEXT NOT NULL,',
+        'archived_at TEXT',
         ')',
       ].join(' '),
       [
@@ -91,17 +106,25 @@ export async function ensureReviewSchema(): Promise<void> {
         'committed_at TEXT NOT NULL,',
         'description TEXT NOT NULL,',
         'conclusion TEXT NOT NULL,',
-        'UNIQUE(review_id, revision)',
+        'UNIQUE(review_id, revision),',
+        'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
         ')',
       ].join(' '),
       [
         'CREATE TABLE IF NOT EXISTS review_issues (',
         'id INTEGER PRIMARY KEY AUTOINCREMENT,',
         'review_id INTEGER NOT NULL,',
+        'issue_key TEXT,',
         'severity TEXT NOT NULL,',
         'title TEXT NOT NULL,',
         'related_revisions TEXT NOT NULL,',
-        'detail TEXT NOT NULL',
+        'detail TEXT NOT NULL,',
+        `status TEXT NOT NULL DEFAULT '${ISSUE_STATUSES[0]}',`,
+        'status_note TEXT,',
+        'status_updated_at TEXT,',
+        'source_current INTEGER NOT NULL DEFAULT 1,',
+        'version INTEGER NOT NULL DEFAULT 0,',
+        'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
         ')',
       ].join(' '),
       [
@@ -112,15 +135,135 @@ export async function ensureReviewSchema(): Promise<void> {
         'created_at TEXT NOT NULL',
         ')',
       ].join(' '),
+    ];
+
+    await DB.batch(baseStatements.map((statement) => DB.prepare(statement)));
+
+    const [logColumns, issueColumns] = await Promise.all([
+      DB.prepare('PRAGMA table_info(review_logs)').all<SchemaColumn>(),
+      DB.prepare('PRAGMA table_info(review_issues)').all<SchemaColumn>(),
+    ]);
+    const logColumnNames = new Set(
+      (logColumns.results ?? []).map((column) => column.name),
+    );
+    const issueColumnNames = new Set(
+      (issueColumns.results ?? []).map((column) => column.name),
+    );
+    const upgrades: string[] = [];
+    if (!logColumnNames.has('archived_at')) {
+      upgrades.push('ALTER TABLE review_logs ADD COLUMN archived_at TEXT');
+    }
+    if (!issueColumnNames.has('issue_key')) {
+      upgrades.push('ALTER TABLE review_issues ADD COLUMN issue_key TEXT');
+    }
+    if (!issueColumnNames.has('status')) {
+      upgrades.push(
+        `ALTER TABLE review_issues ADD COLUMN status TEXT NOT NULL DEFAULT '${ISSUE_STATUSES[0]}'`,
+      );
+    }
+    if (!issueColumnNames.has('status_note')) {
+      upgrades.push('ALTER TABLE review_issues ADD COLUMN status_note TEXT');
+    }
+    if (!issueColumnNames.has('status_updated_at')) {
+      upgrades.push('ALTER TABLE review_issues ADD COLUMN status_updated_at TEXT');
+    }
+    if (!issueColumnNames.has('source_current')) {
+      upgrades.push(
+        'ALTER TABLE review_issues ADD COLUMN source_current INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+    if (!issueColumnNames.has('version')) {
+      upgrades.push(
+        'ALTER TABLE review_issues ADD COLUMN version INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (upgrades.length) {
+      await DB.batch(upgrades.map((statement) => DB.prepare(statement)));
+    }
+
+    await DB.batch([
+      DB.prepare(
+        'UPDATE review_issues SET status = ? WHERE status IS NULL OR TRIM(status) = ?',
+      ).bind(ISSUE_STATUSES[0], ''),
+      DB.prepare(
+        'UPDATE review_issues SET source_current = 1 WHERE source_current IS NULL',
+      ),
+      DB.prepare('UPDATE review_issues SET version = 0 WHERE version IS NULL'),
+    ]);
+    await backfillIssueKeys(DB);
+
+    const lifecycleStatements = [
+      [
+        'CREATE TABLE IF NOT EXISTS review_issue_events (',
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+        'issue_id INTEGER NOT NULL,',
+        'from_status TEXT,',
+        'to_status TEXT NOT NULL,',
+        'note TEXT NOT NULL,',
+        'created_at TEXT NOT NULL,',
+        'FOREIGN KEY(issue_id) REFERENCES review_issues(id) ON DELETE CASCADE',
+        ')',
+      ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS anonymous_update_limits (',
+        'client_hash TEXT PRIMARY KEY,',
+        'window_started_at TEXT NOT NULL,',
+        'request_count INTEGER NOT NULL',
+        ')',
+      ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS archive_operation_previews (',
+        'token TEXT PRIMARY KEY,',
+        'admin_user_id TEXT NOT NULL,',
+        'review_ids_json TEXT NOT NULL,',
+        'review_count INTEGER NOT NULL,',
+        'revision_count INTEGER NOT NULL,',
+        'issue_count INTEGER NOT NULL,',
+        'created_at TEXT NOT NULL,',
+        'expires_at TEXT NOT NULL,',
+        'FOREIGN KEY(admin_user_id) REFERENCES admin_users(user_id) ON DELETE CASCADE',
+        ')',
+      ].join(' '),
       'CREATE INDEX IF NOT EXISTS idx_review_logs_log_date ON review_logs(log_date)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_severity ON review_logs(p1_count, p2_count)',
+      'CREATE INDEX IF NOT EXISTS idx_review_logs_archive_date_id ON review_logs(archived_at, log_date, id)',
       'CREATE INDEX IF NOT EXISTS idx_review_revisions_revision ON review_revisions(revision)',
       'CREATE INDEX IF NOT EXISTS idx_review_revisions_author ON review_revisions(author)',
       'CREATE INDEX IF NOT EXISTS idx_review_issues_review_id ON review_issues(review_id)',
       'CREATE INDEX IF NOT EXISTS idx_review_issues_severity ON review_issues(severity)',
+      'CREATE INDEX IF NOT EXISTS idx_review_issues_status_current_review ON review_issues(status, source_current, review_id)',
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_issues_review_issue_key ON review_issues(review_id, issue_key) WHERE issue_key IS NOT NULL',
+      'CREATE INDEX IF NOT EXISTS idx_review_issue_events_issue_created ON review_issue_events(issue_id, created_at)',
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issues_review_fk_insert',
+        'BEFORE INSERT ON review_issues',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_logs WHERE id = NEW.review_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issues_review_fk_update',
+        'BEFORE UPDATE OF review_id ON review_issues',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_logs WHERE id = NEW.review_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issue_events_issue_fk_insert',
+        'BEFORE INSERT ON review_issue_events',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_issues WHERE id = NEW.issue_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
+      [
+        'CREATE TRIGGER IF NOT EXISTS review_issue_events_issue_fk_update',
+        'BEFORE UPDATE OF issue_id ON review_issue_events',
+        'WHEN NOT EXISTS (SELECT 1 FROM review_issues WHERE id = NEW.issue_id)',
+        "BEGIN SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed'); END",
+      ].join(' '),
     ];
 
-    await DB.batch(statements.map((statement) => DB.prepare(statement)));
+    await DB.batch(
+      lifecycleStatements.map((statement) => DB.prepare(statement)),
+    );
+    await ensureReviewSearch(DB);
     await DB.prepare('PRAGMA optimize').run();
   })();
 
@@ -131,6 +274,112 @@ export async function ensureReviewSchema(): Promise<void> {
     schemaReady.delete(DB);
     throw error;
   }
+}
+
+async function backfillIssueKeys(DB: D1Database): Promise<void> {
+  const result = await DB.prepare(
+    `SELECT id, review_id AS reviewId, issue_key AS issueKey,
+            severity, title, related_revisions AS relatedRevisions
+     FROM review_issues
+     ORDER BY review_id, id`,
+  ).all<IssueIdentityRow>();
+  const usedKeys = new Set<string>();
+  const updates: D1PreparedStatement[] = [];
+
+  for (const issue of result.results ?? []) {
+    const prefix = `${issue.reviewId}:`;
+    const currentKey = issue.issueKey?.trim() ?? '';
+    const baseKey =
+      currentKey ||
+      normalizeIssueKey(
+        `${issue.severity}:${issue.title}:${issue.relatedRevisions}`,
+      );
+    let issueKey = baseKey;
+    if (usedKeys.has(prefix + issueKey)) {
+      issueKey = `${baseKey}:${issue.id}`;
+    }
+    usedKeys.add(prefix + issueKey);
+
+    if (issue.issueKey !== issueKey) {
+      updates.push(
+        DB.prepare('UPDATE review_issues SET issue_key = ? WHERE id = ?').bind(
+          issueKey,
+          issue.id,
+        ),
+      );
+    }
+  }
+
+  if (updates.length) await DB.batch(updates);
+}
+
+async function ensureReviewSearch(DB: D1Database): Promise<void> {
+  const searchColumns = [
+    'review_id UNINDEXED',
+    'title',
+    'overview',
+    'scope_text',
+    'revisions',
+    'authors',
+    'descriptions',
+    'issue_titles',
+    'issue_details',
+    'status_notes',
+  ].join(', ');
+  await DB.prepare(
+    `CREATE VIRTUAL TABLE IF NOT EXISTS review_search USING fts5(${searchColumns}, tokenize='trigram')`,
+  ).run();
+  await rebuildReviewSearch(DB);
+
+  const rebuildNewReview = reviewSearchTriggerBody('NEW.id');
+  const rebuildNewRevisionReview = reviewSearchTriggerBody('NEW.review_id');
+  const rebuildOldRevisionReview = reviewSearchTriggerBody('OLD.review_id');
+  const triggers = [
+    `CREATE TRIGGER IF NOT EXISTS review_search_logs_ai AFTER INSERT ON review_logs BEGIN ${rebuildNewReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_logs_au AFTER UPDATE ON review_logs BEGIN ${rebuildNewReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_logs_ad AFTER DELETE ON review_logs BEGIN DELETE FROM review_search WHERE rowid = OLD.id; END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_revisions_ai AFTER INSERT ON review_revisions BEGIN ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_revisions_au AFTER UPDATE ON review_revisions BEGIN ${rebuildOldRevisionReview} ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_revisions_ad AFTER DELETE ON review_revisions BEGIN ${rebuildOldRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_issues_ai AFTER INSERT ON review_issues BEGIN ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_issues_au AFTER UPDATE ON review_issues BEGIN ${rebuildOldRevisionReview} ${rebuildNewRevisionReview} END`,
+    `CREATE TRIGGER IF NOT EXISTS review_search_issues_ad AFTER DELETE ON review_issues BEGIN ${rebuildOldRevisionReview} END`,
+  ];
+  await DB.batch(triggers.map((statement) => DB.prepare(statement)));
+}
+
+async function rebuildReviewSearch(DB: D1Database): Promise<void> {
+  await DB.batch([
+    DB.prepare('DELETE FROM review_search'),
+    DB.prepare(reviewSearchInsertSql()),
+  ]);
+}
+
+function reviewSearchTriggerBody(reviewId: string): string {
+  return [
+    `DELETE FROM review_search WHERE rowid = ${reviewId};`,
+    reviewSearchInsertSql(`l.id = ${reviewId}`) + ';',
+  ].join(' ');
+}
+
+function reviewSearchInsertSql(where?: string): string {
+  return [
+    'INSERT INTO review_search (',
+    'rowid, review_id, title, overview, scope_text, revisions, authors,',
+    'descriptions, issue_titles, issue_details, status_notes',
+    ')',
+    'SELECT l.id, l.id, l.title, l.overview, l.scope_text,',
+    "COALESCE((SELECT group_concat('r' || revision, ' ') FROM review_revisions WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(author, ' ') FROM review_revisions WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(description, ' ') FROM review_revisions WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(title, ' ') FROM review_issues WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(detail, ' ') FROM review_issues WHERE review_id = l.id), ''),",
+    "COALESCE((SELECT group_concat(status_note, ' ') FROM review_issues WHERE review_id = l.id), '')",
+    'FROM review_logs l',
+    where ? `WHERE ${where}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 async function all<T>(
