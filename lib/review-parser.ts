@@ -97,7 +97,7 @@ export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'r
     countFrom(scopeText, /(\d+)\s*个进入(?:代码)?审查/i);
   const parsedSkippedCount = countFrom(
     scopeText,
-    /跳过\s*(\d+)\s*个|(\d+)\s*个[^，。]*跳过/i,
+    /跳过\s*(\d+)\s*个|(\d+)\s*个[^，,；;。]*跳过/i,
   );
 
   return {
@@ -204,7 +204,7 @@ function parseIssues(markdown: string): ParsedIssue[] {
       const detail = detailLines.join('\n').trim();
       const explicitRevisions = normalizeRelatedRevisions(
         detail.match(
-          /相关\s+revision[：:]\s*((?:`?r?\d+`?)(?:\s*[、，,/]\s*`?r?\d+`?)*)/i,
+          /相关\s+revision[：:]\s*((?:`?r?\d+`?)(?:(?:\s*[、，,/]\s*|\s+)`?r?\d+`?)*)/i,
         )?.[1] ?? '',
       );
       const titleRevisions = normalizeTitleRevisions(titleLine);

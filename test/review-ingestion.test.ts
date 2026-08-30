@@ -59,6 +59,18 @@ describe('审查日志合并导入', () => {
     });
   });
 
+  it('识别 ASCII 标点分隔的审查和跳过计数', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 5 个 revision, 实际审查 4 个, 跳过 1 个',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 5,
+      reviewedCount: 4,
+      skippedCount: 1,
+    });
+  });
+
   it('兼容以提交表述总数的旧日志', () => {
     expect(parseReviewMarkdown([
       '# 上传日志',
@@ -394,6 +406,42 @@ describe('审查日志合并导入', () => {
       }),
     ]);
     expect(events?.count).toBe(1);
+  });
+
+  it('空格分隔相关 Revision 时保留旧问题状态并排除说明编号', async () => {
+    const markdown = whitespaceSeparatedRevisionMarkdown();
+    await ingestReview(ingestInput(markdown));
+    const original = (await issueRows())[0];
+
+    await DB.prepare(
+      `UPDATE review_issues
+       SET issue_key = 'p2:whitespace-related-revisions:53825、53826',
+           related_revisions = '53825、53826', status = 'resolved',
+           status_note = '空格格式问题已解决', version = 2
+       WHERE id = ?`,
+    )
+      .bind(original.id)
+      .run();
+
+    const result = await ingestReview(ingestInput(markdown));
+    const issues = await issueRows();
+
+    expect(result.ingestion).toEqual({
+      createdIssueCount: 0,
+      updatedIssueCount: 1,
+      parsedIssueCount: 1,
+    });
+    expect(issues).toEqual([
+      expect.objectContaining({
+        id: original.id,
+        issueKey: 'p2:whitespace-related-revisions:53825、53826',
+        relatedRevisions: '53825、53826',
+        status: 'resolved',
+        statusNote: '空格格式问题已解决',
+        sourceCurrent: 1,
+        version: 2,
+      }),
+    ]);
   });
 
   it('源问题增删及重新出现时保留历史行，只让当前问题进入总览', async () => {
@@ -908,5 +956,23 @@ function titleDerivedRevisionMarkdown(): string {
 #### r53825 Some problem
 
 问题详情未显式声明相关 revision。
+`;
+}
+
+function whitespaceSeparatedRevisionMarkdown(): string {
+  return `# 空格 Revision 审查日志
+日期：2026-08-27
+审查范围：共 2 个 revision，实际审查 2 个，跳过 0 个
+
+| Revision | 作者 | 提交说明 | 结果 |
+| --- | --- | --- | --- |
+| 53825 | zhoupx | 第一条提交 | 已审查 |
+| 53826 | zhoupx | 第二条提交 | 已审查 |
+
+### P2
+
+#### Whitespace Related Revisions
+
+相关 revision：53825 53826（对应 BUG #552）
 `;
 }
