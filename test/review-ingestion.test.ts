@@ -337,6 +337,53 @@ describe('审查日志合并导入', () => {
     expect(events?.count).toBe(1);
   });
 
+  it('标题推导 Revision 时兼容旧问题标识并保留协作状态', async () => {
+    const markdown = titleDerivedRevisionMarkdown();
+    await ingestReview(ingestInput(markdown));
+    const original = (await issueRows())[0];
+
+    await DB.batch([
+      DB.prepare(
+        `UPDATE review_issues
+         SET issue_key = 'p2:r53825-some-problem:', related_revisions = '',
+             status = 'resolved', status_note = '旧问题已解决', version = 4
+         WHERE id = ?`,
+      ).bind(original.id),
+      DB.prepare(
+        `INSERT INTO review_issue_events (
+          issue_id, from_status, to_status, note, created_at
+        ) VALUES (?, 'open', 'resolved', '旧问题已解决',
+                  '2026-08-27T10:00:00.000Z')`,
+      ).bind(original.id),
+    ]);
+
+    const result = await ingestReview(ingestInput(markdown));
+    const issues = await issueRows();
+    const events = await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_issue_events WHERE issue_id = ?',
+    )
+      .bind(original.id)
+      .first<{ count: number }>();
+
+    expect(result.ingestion).toEqual({
+      createdIssueCount: 0,
+      updatedIssueCount: 1,
+      parsedIssueCount: 1,
+    });
+    expect(issues).toEqual([
+      expect.objectContaining({
+        id: original.id,
+        issueKey: 'p2:r53825-some-problem:',
+        relatedRevisions: '53825',
+        status: 'resolved',
+        statusNote: '旧问题已解决',
+        sourceCurrent: 1,
+        version: 4,
+      }),
+    ]);
+    expect(events?.count).toBe(1);
+  });
+
   it('源问题增删及重新出现时保留历史行，只让当前问题进入总览', async () => {
     await ingestReview(ingestInput(initialMarkdown()));
     const firstPass = await issueRows();
@@ -832,5 +879,22 @@ function fiveRevisionMarkdown(scope: string): string {
 | 53843 | zhoupx | 提交三 | 已审查 |
 | 53844 | zhoupx | 提交四 | 已审查 |
 | 53845 | zhoupx | 提交五 | 已审查 |
+`;
+}
+
+function titleDerivedRevisionMarkdown(): string {
+  return `# 标题 Revision 审查日志
+日期：2026-08-27
+审查范围：共 1 个 revision，实际审查 1 个，跳过 0 个
+
+| Revision | 作者 | 提交说明 | 结果 |
+| --- | --- | --- | --- |
+| 53825 | zhoupx | 标题关联测试 | 已审查 |
+
+### P2
+
+#### r53825 Some problem
+
+问题详情未显式声明相关 revision。
 `;
 }

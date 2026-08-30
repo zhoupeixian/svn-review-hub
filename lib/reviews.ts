@@ -1223,7 +1223,16 @@ export async function ingestReview(
   const issuesByKey = new Map<string, ParsedIssue>();
   for (const issue of parsed.issues) {
     const identity = issueStableKey(issue);
-    issuesByKey.set(existingKeyByIdentity.get(identity) ?? identity, issue);
+    const legacyTitleIdentity =
+      issue.relatedRevisionSource === 'title'
+        ? issueStableKey({ ...issue, relatedRevisions: '' })
+        : '';
+    issuesByKey.set(
+      existingKeyByIdentity.get(identity) ??
+        existingKeyByIdentity.get(legacyTitleIdentity) ??
+        identity,
+      issue,
+    );
   }
   const currentIssues = [...issuesByKey.entries()];
   const createdIssueCount = currentIssues.filter(
