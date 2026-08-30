@@ -47,6 +47,113 @@ describe('审查日志合并导入', () => {
     });
   });
 
+  it('识别进入代码审查和命中默认跳过规则的文案', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-20',
+      '审查范围：共发现 22 个 revision，其中 17 个进入代码审查，5 个命中默认跳过规则。',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 22,
+      reviewedCount: 17,
+      skippedCount: 5,
+    });
+  });
+
+  it('兼容以提交表述总数的旧日志', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-24',
+      '审查范围：共 23 个提交，其中 22 个可审查 revision，1 个按默认规则跳过。',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 23,
+      reviewedCount: 22,
+      skippedCount: 1,
+    });
+  });
+
+  it('总数和已审查数明确时推导未单独计数的跳过数', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-19',
+      '审查范围：内共 26 个 revision；其中 20 个进入审查。其余 revision 命中默认跳过规则。',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 26,
+      reviewedCount: 20,
+      skippedCount: 6,
+    });
+  });
+
+  it('只有提交总数时不猜测审查和跳过分布', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-19',
+      '审查范围：共 6 个 revision。',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 6,
+      reviewedCount: 0,
+      skippedCount: 0,
+    });
+  });
+
+  it('解析 2026-08-28 单行范围、4 列提交表和旧版问题标题', () => {
+    const parsed = parseReviewMarkdown(reviewMarkdown20260828());
+
+    expect(parsed).toMatchObject({
+      logDate: '2026-08-28',
+      revisionCount: 17,
+      reviewedCount: 17,
+      skippedCount: 0,
+      p1Count: 1,
+      p2Count: 1,
+    });
+    expect(parsed.revisions).toHaveLength(17);
+    expect(parsed.revisions[0]).toEqual({
+      revision: 53788,
+      author: 'yt_cheny',
+      committedAt: '',
+      description: 'Task #3474 生产订单接收接口调整二开检查配置',
+      conclusion: '未发现明显问题',
+    });
+    expect(parsed.issues).toEqual([
+      expect.objectContaining({
+        severity: 'P1',
+        title: 'r53825 新增的 BokeDee 7024 与内向交货删除触发器复用',
+        relatedRevisions: '53825',
+      }),
+      expect.objectContaining({
+        severity: 'P2',
+        title: 'r53799/r53825 海化院条码接口固定使用测试租户参数',
+        relatedRevisions: '53799、53825',
+      }),
+    ]);
+  });
+
+  it('解析 2026-08-29 章节范围、r 前缀提交和行内问题标题', () => {
+    const parsed = parseReviewMarkdown(reviewMarkdown20260829());
+
+    expect(parsed).toMatchObject({
+      logDate: '2026-08-29',
+      revisionCount: 5,
+      reviewedCount: 3,
+      skippedCount: 2,
+      p1Count: 1,
+    });
+    expect(parsed.scopeText).toContain('共发现 5 个 revision');
+    expect(parsed.revisions).toHaveLength(5);
+    expect(parsed.revisions.at(-1)).toMatchObject({
+      revision: 53840,
+      committedAt: '',
+    });
+    expect(parsed.issues).toEqual([
+      expect.objectContaining({
+        severity: 'P1',
+        title: 'r53839 注册并调用了当时未随提交进入 SVN 的 Java 类',
+        relatedRevisions: '53839',
+        detail: expect.not.stringContaining('r53833：结果分析单增加删除操作'),
+      }),
+    ]);
+  });
+
   beforeEach(async () => {
     await DB.batch([
       DB.prepare('DELETE FROM review_issue_events'),
@@ -57,6 +164,42 @@ describe('审查日志合并导入', () => {
     ]);
     await clearBucket();
     runtime.REVIEW_SYNC_KEY = SYNC_KEY;
+  });
+
+  it('拒绝非零提交计数与提交表不完整的日志', async () => {
+    const incomplete = reviewMarkdown20260829().replace(
+      '| r53840 | guangyh | 修正条件判断 | 已审查 |\n',
+      '',
+    );
+
+    await expect(ingestReview(ingestInput(incomplete))).rejects.toThrow(
+      '提交表解析不完整',
+    );
+    expect(await reviewStorageRow()).toBeNull();
+    expect(await bucketKeys()).toEqual([]);
+  });
+
+  it('允许明确声明零提交的日志', async () => {
+    const result = await ingestReview(ingestInput(zeroRevisionMarkdown()));
+
+    expect(result).toMatchObject({
+      revisionCount: 0,
+      reviewedCount: 0,
+      skippedCount: 0,
+    });
+    expect(await revisionRows()).toEqual([]);
+  });
+
+  it('允许使用“提交”文案明确声明零提交', async () => {
+    const markdown = zeroRevisionMarkdown().replace('0 个 revision', '0 个提交');
+    const result = await ingestReview(ingestInput(markdown));
+
+    expect(result).toMatchObject({
+      revisionCount: 0,
+      reviewedCount: 0,
+      skippedCount: 0,
+    });
+    expect(await revisionRows()).toEqual([]);
   });
 
   it('重复导入同一问题时保留状态、说明、版本和事件，并更新源字段', async () => {
@@ -507,5 +650,89 @@ function failingMarkdownWithDuplicateRevision(): string {
 相关 revision：999
 
 该问题不得替换旧问题。
+`;
+}
+
+function reviewMarkdown20260828(): string {
+  return `# ZHERP 当日 SVN 提交审查日志
+
+日期：2026-08-28
+审查范围：2026-08-27 19:00:00 至 2026-08-28 18:59:59，共 17 个 revision，17 个均可审查。
+总体结论：代码审查确认 1 个 P1 高风险问题；另有 1 个 P2 环境配置风险。
+
+| Revision | 提交人 | 提交说明 | 审查结论 |
+| --- | --- | --- | --- |
+| 53788 | yt_cheny | Task #3474 生产订单接收接口调整二开检查配置 | 未发现明显问题 |
+| 53791 | maogr | BUG #522 | 未发现明显问题 |
+| 53792 | maogr | TASK #2750 | 未发现明显问题 |
+| 53793 | panzq | Task #2764 | 未发现确认缺陷 |
+| 53794 | yt_yaomw | Bug #6738 | 未发现明显问题 |
+| 53797 | yangbo02 | Bug #552 | 未发现明显问题 |
+| 53799 | liuc | Bug #552 | 有 P2 环境配置风险 |
+| 53800 | qiuhb | TASK #2600 | 未发现明显问题 |
+| 53809 | yt_yaomw | Bug #552 | 未发现明显问题 |
+| 53812 | panzq | Bug #552 | 未发现明显问题 |
+| 53814 | yangbo02 | task #2697 | 未发现确认缺陷 |
+| 53816 | panzq | Task #2764 | 未发现明显问题 |
+| 53817 | panzq | Task #2764 | 未发现明显问题 |
+| 53819 | panzq | Task #2764 | 未发现明显问题 |
+| 53820 | qiuhb | BUG #6740 | 有待业务确认观察 |
+| 53823 | yt_yaomw | Bug #552 | 未发现明显问题 |
+| 53825 | liuc | Bug #552 | 有 P1 高风险问题及 P2 环境配置风险 |
+
+### P1
+
+#### r53825 新增的 BokeDee 7024 与内向交货删除触发器复用
+
+- 相关 revision：53825
+- 证据：调用参数仍写入 BizType=7020。
+
+### P2
+
+#### r53799/r53825 海化院条码接口固定使用测试租户参数
+
+- 相关 revision：53799、53825
+- 证据：companycode 使用 _test 参数。
+`;
+}
+
+function reviewMarkdown20260829(): string {
+  return `# ZHERP 当日 SVN 提交审查日志
+
+日期：2026-08-29
+
+## 审查范围与执行边界
+
+审查窗口为 2026-08-28 19:00:00 至 2026-08-29 18:59:59，共发现 5 个 revision：\`r53833\`、\`r53834\`、\`r53835\`、\`r53839\`、\`r53840\`。其中 3 个可审查，2 个按默认规则跳过。
+
+## 提交概览
+
+| Revision | 作者 | 提交说明 | 结果 |
+| --- | --- | --- | --- |
+| r53833 | qiuhb | BUG#552 放出删除按钮 | 已审查 |
+| r53834 | lansz | Jenkins 发布版本记录 | 跳过 |
+| r53835 | yt_suncl | ZHERP 更新日志 | 跳过 |
+| r53839 | zhoupx | Task #2772 益神项目毛利表开发 | 发现 1 个 P1 |
+| r53840 | guangyh | 修正条件判断 | 已审查 |
+
+## 审查问题
+
+### P1：r53839 注册并调用了当时未随提交进入 SVN 的 Java 类
+
+相关变更中未随提交进入 SVN，后续由 r53841 补交。
+
+## 其他提交结论
+
+### r53833：结果分析单增加删除操作
+
+未发现审查问题。
+`;
+}
+
+function zeroRevisionMarkdown(): string {
+  return `# ZHERP 当日 SVN 提交审查日志
+日期：2026-08-30
+审查范围：共 0 个 revision，实际审查 0 个，跳过 0 个
+总体结论：当日无提交。
 `;
 }

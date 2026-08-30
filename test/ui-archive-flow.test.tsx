@@ -40,6 +40,10 @@ describe('归档库与归档管理 UI', () => {
     vi.restoreAllMocks();
     cleanup();
     window.history.replaceState({}, '', '/');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
   });
 
   it('归档库加载更多时保留归档范围和当前筛选', async () => {
@@ -129,6 +133,17 @@ describe('归档库与归档管理 UI', () => {
     expect(window.location.search).toContain('scope=archived');
   });
 
+  it('归档卡片和筛选使用统一的严重级别与状态语义', async () => {
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
+    expect(screen.getByText('P1 1').getAttribute('data-severity')).toBe('P1');
+    const severity = screen.getByLabelText('按严重级别筛选');
+    const status = screen.getByLabelText('按问题状态筛选');
+    await userEvent.selectOptions(severity, 'P3');
+    await userEvent.selectOptions(status, 'deferred');
+    expect(severity.getAttribute('data-severity')).toBe('P3');
+    expect(status.getAttribute('data-status')).toBe('deferred');
+  });
+
   it('连续快速应用筛选时旧响应不能覆盖最新结果、筛选和分页游标', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     let resolveFirst!: (response: Response) => void;
@@ -149,7 +164,7 @@ describe('归档库与归档管理 UI', () => {
       items: [{ ...archivedReview, id: 7, title: 'bob 归档' }], nextCursor: 'bob-next', hasMore: true,
     }), { status: 200 }));
     expect(await screen.findByText('bob 归档')).toBeTruthy();
-    expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('author=bob');
+    expect(screen.queryByLabelText('当前筛选链接')).toBeNull();
 
     resolveFirst(new Response(JSON.stringify({
       items: [{ ...archivedReview, id: 6, title: 'alice 归档' }], nextCursor: 'alice-next', hasMore: true,
@@ -157,7 +172,8 @@ describe('归档库与归档管理 UI', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText('alice 归档')).toBeNull();
     expect(screen.getByText('bob 归档')).toBeTruthy();
-    expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('author=bob');
+    await userEvent.click(screen.getByRole('button', { name: '复制当前筛选链接' }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('author=bob'));
 
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ items: [], nextCursor: null, hasMore: false }), { status: 200 }));
     await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
@@ -217,6 +233,23 @@ describe('归档库与归档管理 UI', () => {
       mode: 'preview', filters: { author: 'alice', status: 'open' },
     });
     expect(await screen.findByText(/将归档 27 份日志/)).toBeTruthy();
+  });
+
+  it('归档管理下拉框暴露当前严重级别和问题状态', async () => {
+    render(<ArchiveManager
+      initialActive={{ items: [activeReview], nextCursor: null, hasMore: false }}
+      initialArchived={emptyPage}
+    />);
+
+    const severity = screen.getByLabelText('按问题级别筛选活动日志');
+    const status = screen.getByLabelText('按问题状态筛选活动日志');
+    expect(severity.getAttribute('data-severity')).toBe('all');
+    expect(status.getAttribute('data-status')).toBe('all');
+
+    await userEvent.selectOptions(severity, 'P2');
+    await userEvent.selectOptions(status, 'pending_review');
+    expect(severity.getAttribute('data-severity')).toBe('P2');
+    expect(status.getAttribute('data-status')).toBe('pending_review');
   });
 
   it('恢复单条归档日志后重新查询活动列表和归档列表', async () => {

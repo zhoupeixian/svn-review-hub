@@ -1179,6 +1179,7 @@ export async function ingestReview(
   if (!parsed.logDate) {
     throw new Error('未识别到“日期：YYYY-MM-DD”字段，不能作为审查日志导入。');
   }
+  validateParsedReview(parsed);
 
   const sourceKey = input.sourceKey.trim().slice(0, 500);
   if (!sourceKey) throw new Error('日志来源标识不能为空。');
@@ -1354,6 +1355,33 @@ export async function ingestReview(
       parsedIssueCount: currentIssues.length,
     },
   };
+}
+
+function validateParsedReview(parsed: ReturnType<typeof parseReviewMarkdown>): void {
+  const explicitlyZero = /共(?:发现)?\s*0\s*个\s*(?:revision|提交)/i.test(
+    parsed.scopeText,
+  );
+  if (parsed.revisionCount === 0) {
+    if (
+      explicitlyZero &&
+      parsed.reviewedCount === 0 &&
+      parsed.skippedCount === 0 &&
+      parsed.revisions.length === 0
+    ) {
+      return;
+    }
+    throw new Error('未识别到明确的审查提交总数。');
+  }
+  if (parsed.reviewedCount + parsed.skippedCount !== parsed.revisionCount) {
+    throw new Error(
+      `审查范围计数不一致：共 ${parsed.revisionCount} 个，审查 ${parsed.reviewedCount} 个，跳过 ${parsed.skippedCount} 个。`,
+    );
+  }
+  if (parsed.revisions.length !== parsed.revisionCount) {
+    throw new Error(
+      `提交表解析不完整：声明 ${parsed.revisionCount} 个，实际解析 ${parsed.revisions.length} 个。`,
+    );
+  }
 }
 
 function normalizeReviewCounts<T extends Pick<ReviewSummary, 'scopeText' | 'revisionCount' | 'reviewedCount' | 'skippedCount'>>(review: T): T {

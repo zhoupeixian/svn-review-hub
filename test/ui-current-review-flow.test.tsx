@@ -35,12 +35,27 @@ describe('当前审查协作 UI', () => {
     expect(fetch).toHaveBeenCalledWith('/api/reviews?scope=active&cursor=next');
   });
 
-  it('问题卡片带数据库锚点和当前筛选链接', () => {
+  it('问题卡片带数据库锚点和当前筛选操作', () => {
     window.history.pushState({}, '', '/issues?status=open&severity=P1');
     render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
     expect(document.getElementById('issue-42')).toBeTruthy();
     expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/reviews/1#issue-42');
-    expect((screen.getByLabelText('当前筛选链接') as HTMLInputElement).value).toContain('status=open&severity=P1');
+    expect(screen.getByRole('button', { name: '复制当前筛选链接' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: '导出 Excel 跟进表' }).getAttribute('href')).toContain('status=open&severity=P1');
+    expect(document.querySelector('#issue-42 [data-severity="P1"]')?.textContent).toBe('P1');
+    expect(document.querySelector('#issue-42 [data-status="open"]')?.textContent).toBe('待处理');
+  });
+
+  it('严重级别和状态下拉框暴露当前选中值供主题着色', async () => {
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore={false} />);
+    const severity = screen.getByLabelText('按严重级别筛选');
+    const status = screen.getByLabelText('按状态筛选');
+    expect(severity.getAttribute('data-severity')).toBe('all');
+    expect(status.getAttribute('data-status')).toBe('active');
+    await userEvent.selectOptions(severity, 'P2');
+    await userEvent.selectOptions(status, 'resolved');
+    expect(severity.getAttribute('data-severity')).toBe('P2');
+    expect(status.getAttribute('data-status')).toBe('resolved');
   });
 
   it('主题切换保存并恢复本机偏好', async () => {
@@ -155,7 +170,7 @@ describe('当前审查协作 UI', () => {
 
   it('只读状态面板仍显示处理信息，但不提供保存操作', () => {
     render(<IssueStatusPanel issue={{ ...issue, statusNote: '已归档说明' }} readOnly />);
-    expect(screen.getByText('当前状态：待处理')).toBeTruthy();
+    expect(screen.getByText('当前状态：待处理').getAttribute('data-status')).toBe('open');
     expect(screen.getByText('处理说明：已归档说明')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存状态' })).toBeNull();
   });

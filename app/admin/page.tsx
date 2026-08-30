@@ -73,7 +73,7 @@ export default async function AdminPage() {
 
         <ArchiveManager initialActive={activePage} initialArchived={archivedPage} />
 
-        <section className="mt-8 rounded-3xl border border-[#d8e4d9] bg-[#edf6ee] p-6 sm:p-8">
+        <section className="automation-panel mt-8 rounded-3xl p-6 sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#4a8066]">每日自动同步</p>
           <h2 className="mt-1 text-xl font-black tracking-tight text-[#244333]">与“SVN 当日提交审查”保持同频</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-[#5a7060]">

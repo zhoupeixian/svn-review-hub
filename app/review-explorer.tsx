@@ -37,5 +37,5 @@ export default function ReviewExplorer({ initialItems, initialCursor, initialHas
 }
 
 function Risk({ level, count }: { level: string; count: number }) {
-  return <span className="rounded-lg border border-[#d5dfd6] bg-[#f7faf7] px-2.5 py-1.5 text-xs font-bold text-[#526c5c]">{level} {count}</span>;
+  return <span className="risk-chip" data-severity={level}>{level} {count}</span>;
 }
