@@ -154,6 +154,40 @@ describe('审查日志合并导入', () => {
     ]);
   });
 
+  it('读取审查范围章节中完整的换行段落', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '## 审查范围与执行边界',
+      '',
+      '审查窗口为 2026-08-29 19:00:00 至 2026-08-30 18:59:59，',
+      '共发现 5 个 revision，其中 3 个可审查，2 个按规则跳过。',
+      '',
+      '本段说明不属于审查范围摘要。',
+    ].join('\n'));
+
+    expect(parsed).toMatchObject({
+      scopeText: '审查窗口为 2026-08-29 19:00:00 至 2026-08-30 18:59:59， 共发现 5 个 revision，其中 3 个可审查，2 个按规则跳过。',
+      revisionCount: 5,
+      reviewedCount: 3,
+      skippedCount: 2,
+    });
+  });
+
+  it('关联 Revision 不吸收后续说明中的编号', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 2 个 revision，实际审查 2 个，跳过 0 个',
+      '### P1：r53613/r53618 示例问题',
+      '相关 revision：`r53613` / r53618（对应 BUG #552）',
+    ].join('\n'));
+
+    expect(parsed.issues[0]).toMatchObject({
+      relatedRevisions: '53613、53618',
+    });
+  });
+
   it('解析省略尾部竖线的 Revision 表', () => {
     const parsed = parseReviewMarkdown([
       '# 上传日志',

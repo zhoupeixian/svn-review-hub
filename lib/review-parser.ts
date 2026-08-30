@@ -61,12 +61,17 @@ function firstParagraphAfterHeading(lines: string[], heading: string): string {
   );
   if (headingIndex < 0) return '';
 
-  return (
-    lines
-      .slice(headingIndex + 1)
-      .find((line) => line.trim() && !line.startsWith('#'))
-      ?.trim() ?? ''
-  );
+  const paragraph: string[] = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (paragraph.length) break;
+      continue;
+    }
+    if (trimmed.startsWith('#')) break;
+    paragraph.push(trimmed);
+  }
+  return paragraph.join(' ');
 }
 
 function lineValue(lines: string[], label: string): string {
@@ -187,7 +192,9 @@ function parseIssues(markdown: string): ParsedIssue[] {
       const [titleLine = '', ...detailLines] = entry.split('\n');
       const detail = detailLines.join('\n').trim();
       const explicitRevisions = normalizeRelatedRevisions(
-        detail.match(/相关\s+revision：\s*([^\n]+)/i)?.[1] ?? '',
+        detail.match(
+          /相关\s+revision[：:]\s*((?:`?r?\d+`?)(?:\s*[、，,/]\s*`?r?\d+`?)*)/i,
+        )?.[1] ?? '',
       );
       const revisions =
         explicitRevisions || normalizeTitleRevisions(titleLine);
