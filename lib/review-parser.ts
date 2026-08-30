@@ -140,6 +140,13 @@ function parseRevisionTable(lines: string[]): ParsedRevision[] {
     for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
       const cells = tableCells(lines[rowIndex]);
       if (!cells.length) break;
+      if (
+        [revisionIndex, authorIndex, descriptionIndex, conclusionIndex].some(
+          (requiredIndex) => requiredIndex >= cells.length,
+        )
+      ) {
+        continue;
+      }
       const revisionMatch = cells[revisionIndex]?.match(/^r?(\d+)$/i);
       if (!revisionMatch) continue;
 

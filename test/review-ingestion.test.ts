@@ -251,6 +251,18 @@ describe('审查日志合并导入', () => {
     expect(await bucketKeys()).toEqual([]);
   });
 
+  it('拒绝缺少必需列的 Revision 行', async () => {
+    const truncated = fiveRevisionMarkdown(
+      '共 5 个 revision，实际审查 5 个，跳过 0 个',
+    ).replace('| 53841 | zhoupx | 提交一 | 已审查 |', '| r53841 |');
+
+    await expect(ingestReview(ingestInput(truncated))).rejects.toThrow(
+      '提交表解析不完整',
+    );
+    expect(await reviewStorageRow()).toBeNull();
+    expect(await bucketKeys()).toEqual([]);
+  });
+
   it.each([
     ['显式跳过零个', '共 5 个 revision，实际审查 4 个，跳过 0 个'],
     ['显式审查零个', '共 5 个 revision，实际审查 0 个，跳过 2 个'],
