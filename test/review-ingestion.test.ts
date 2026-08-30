@@ -251,6 +251,17 @@ describe('审查日志合并导入', () => {
     expect(await bucketKeys()).toEqual([]);
   });
 
+  it.each([
+    ['显式跳过零个', '共 5 个 revision，实际审查 4 个，跳过 0 个'],
+    ['显式审查零个', '共 5 个 revision，实际审查 0 个，跳过 2 个'],
+  ])('拒绝%s但总数矛盾的日志', async (_caseName, scope) => {
+    await expect(
+      ingestReview(ingestInput(fiveRevisionMarkdown(scope))),
+    ).rejects.toThrow('审查范围计数不一致');
+    expect(await reviewStorageRow()).toBeNull();
+    expect(await bucketKeys()).toEqual([]);
+  });
+
   it('允许明确声明零提交的日志', async () => {
     const result = await ingestReview(ingestInput(zeroRevisionMarkdown()));
 
@@ -806,5 +817,20 @@ function zeroRevisionMarkdown(): string {
 日期：2026-08-30
 审查范围：共 0 个 revision，实际审查 0 个，跳过 0 个
 总体结论：当日无提交。
+`;
+}
+
+function fiveRevisionMarkdown(scope: string): string {
+  return `# ZHERP 当日 SVN 提交审查日志
+日期：2026-08-30
+审查范围：${scope}
+
+| Revision | 作者 | 提交说明 | 结果 |
+| --- | --- | --- | --- |
+| 53841 | zhoupx | 提交一 | 已审查 |
+| 53842 | zhoupx | 提交二 | 已审查 |
+| 53843 | zhoupx | 提交三 | 已审查 |
+| 53844 | zhoupx | 提交四 | 已审查 |
+| 53845 | zhoupx | 提交五 | 已审查 |
 `;
 }

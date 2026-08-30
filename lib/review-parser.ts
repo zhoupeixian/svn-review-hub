@@ -78,18 +78,21 @@ function lineValue(lines: string[], label: string): string {
   return lines.find((line) => line.startsWith(label))?.slice(label.length).trim() ?? '';
 }
 
-function countFrom(value: string, pattern: RegExp): number {
-  return Number(value.match(pattern)?.slice(1).find(Boolean) ?? 0);
+function countFrom(value: string, pattern: RegExp): number | null {
+  const match = value.match(pattern);
+  if (!match) return null;
+  return Number(match.slice(1).find((group) => group !== undefined) ?? 0);
 }
 
 export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> {
-  const revisionCount = countFrom(
-    scopeText,
-    /共(?:发现)?\s*(\d+)\s*个\s*(?:revision|提交)/i,
-  );
+  const revisionCount =
+    countFrom(
+      scopeText,
+      /共(?:发现)?\s*(\d+)\s*个\s*(?:revision|提交)/i,
+    ) ?? 0;
   const parsedReviewedCount =
-    countFrom(scopeText, /实际审查\s*(\d+)\s*个/i) ||
-    countFrom(scopeText, /(\d+)\s*个(?:均)?可审查/i) ||
+    countFrom(scopeText, /实际审查\s*(\d+)\s*个/i) ??
+    countFrom(scopeText, /(\d+)\s*个(?:均)?可审查/i) ??
     countFrom(scopeText, /(\d+)\s*个进入(?:代码)?审查/i);
   const parsedSkippedCount = countFrom(
     scopeText,
@@ -99,13 +102,13 @@ export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'r
   return {
     revisionCount,
     reviewedCount:
-      parsedReviewedCount ||
-      (parsedSkippedCount > 0 && revisionCount >= parsedSkippedCount
+      parsedReviewedCount ??
+      (parsedSkippedCount !== null && revisionCount >= parsedSkippedCount
         ? revisionCount - parsedSkippedCount
         : 0),
     skippedCount:
-      parsedSkippedCount ||
-      (parsedReviewedCount > 0 && revisionCount >= parsedReviewedCount
+      parsedSkippedCount ??
+      (parsedReviewedCount !== null && revisionCount >= parsedReviewedCount
         ? revisionCount - parsedReviewedCount
         : 0),
   };
