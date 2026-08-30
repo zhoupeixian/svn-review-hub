@@ -149,12 +149,13 @@ function parseRevisionTable(lines: string[]): ParsedRevision[] {
 }
 
 function tableCells(line: string): string[] {
-  if (!line.trimStart().startsWith('|')) return [];
-  return line
-    .trim()
-    .split('|')
-    .slice(1, -1)
-    .map((cell) => cell.trim());
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return [];
+
+  const cells = trimmed.split('|');
+  if (cells[0] === '') cells.shift();
+  if (cells.at(-1) === '') cells.pop();
+  return cells.map((cell) => cell.trim());
 }
 
 function parseIssues(markdown: string): ParsedIssue[] {

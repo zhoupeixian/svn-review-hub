@@ -154,6 +154,44 @@ describe('审查日志合并导入', () => {
     ]);
   });
 
+  it('解析省略尾部竖线的 Revision 表', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 1 个 revision，实际审查 1 个，跳过 0 个',
+      '| Revision | 作者 | 提交说明 | 结果',
+      '| --- | --- | --- | ---',
+      '| r53841 | zhoupx | 补交 Java 类 | 已审查',
+    ].join('\n'));
+
+    expect(parsed.revisions).toEqual([{
+      revision: 53841,
+      author: 'zhoupx',
+      committedAt: '',
+      description: '补交 Java 类',
+      conclusion: '已审查',
+    }]);
+  });
+
+  it('解析省略首部竖线的 Revision 表', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 1 个 revision，实际审查 1 个，跳过 0 个',
+      'Revision | 作者 | 提交说明 | 结果 |',
+      '--- | --- | --- | --- |',
+      'r53841 | zhoupx | 补交 Java 类 | 已审查 |',
+    ].join('\n'));
+
+    expect(parsed.revisions).toEqual([{
+      revision: 53841,
+      author: 'zhoupx',
+      committedAt: '',
+      description: '补交 Java 类',
+      conclusion: '已审查',
+    }]);
+  });
+
   beforeEach(async () => {
     await DB.batch([
       DB.prepare('DELETE FROM review_issue_events'),
