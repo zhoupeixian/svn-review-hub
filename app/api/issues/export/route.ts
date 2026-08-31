@@ -1,11 +1,11 @@
-import { parseReviewFilters } from '@/app/api/reviews/route';
+import { parseReviewFilters } from '@/lib/review-filters';
 import { getIssueExportRows, toIssueWorkbook } from '@/lib/reviews';
 
 export async function GET(request: Request) {
   try {
     const filters = parseReviewFilters(new URL(request.url));
     const workbook = toIssueWorkbook(
-      await getIssueExportRows(filters),
+      await getIssueExportRows(1, filters),
       new URL(request.url).origin,
     );
     const date = new Date().toISOString().slice(0, 10);

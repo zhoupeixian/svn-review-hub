@@ -35,6 +35,12 @@ const archivedReview = {
 
 const emptyPage = { items: [], nextCursor: null, hasMore: false };
 
+const zherpArchiveProps = {
+  projectBasePath: '/projects/zherp',
+  reviewsApiPath: '/api/projects/zherp/reviews',
+  reviewsExportPath: '/api/reviews/export',
+};
+
 describe('归档库与归档管理 UI', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -58,6 +64,7 @@ describe('归档库与归档管理 UI', () => {
       initialCursor="next page"
       initialHasMore
       filters={{ author: 'alice', revision: '53365', status: 'open', keyword: '权限' }}
+      {...zherpArchiveProps}
     />);
 
     await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
@@ -72,12 +79,31 @@ describe('归档库与归档管理 UI', () => {
     expect(requestUrl).toContain('cursor=next+page');
   });
 
+  it('项目归档库只使用当前项目路径，并在未项目化导出前隐藏导出入口', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<ArchiveExplorer
+      initialItems={[archivedReview]}
+      initialCursor="next"
+      initialHasMore
+      projectBasePath="/projects/haihua"
+      reviewsApiPath="/api/projects/haihua/reviews"
+      reviewsExportPath={null}
+    />);
+
+    expect(screen.getByRole('link', { name: '查看归档原文与历史 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/9');
+    expect(screen.queryByRole('link', { name: '导出归档清单' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/reviews?');
+  });
+
   it('归档筛选控件变更后刷新首屏并沿用日期、级别、状态、Revision、提交人和关键词', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ ...archivedReview, id: 7, title: '筛选归档' }], nextCursor: 'archive-next', hasMore: true }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ ...archivedReview, id: 6, title: '筛选归档下一页' }], nextCursor: null, hasMore: false }), { status: 200 }));
-    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor="old-next" initialHasMore />);
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor="old-next" initialHasMore {...zherpArchiveProps} />);
 
     await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
     fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });
@@ -120,7 +146,7 @@ describe('归档库与归档管理 UI', () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [archivedReview], nextCursor: null, hasMore: false,
     }), { status: 200 }));
-    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} {...zherpArchiveProps} />);
 
     expect(screen.queryByLabelText('按提交人筛选')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
@@ -134,7 +160,7 @@ describe('归档库与归档管理 UI', () => {
   });
 
   it('归档卡片和筛选使用统一的严重级别与状态语义', async () => {
-    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} {...zherpArchiveProps} />);
     expect(screen.getByText('P1 1').getAttribute('data-severity')).toBe('P1');
     const severity = screen.getByLabelText('按严重级别筛选');
     const status = screen.getByLabelText('按问题状态筛选');
@@ -152,7 +178,7 @@ describe('归档库与归档管理 UI', () => {
       .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveFirst = resolve; }))
       .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSecond = resolve; }));
 
-    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} />);
+    render(<ArchiveExplorer initialItems={[archivedReview]} initialCursor={null} initialHasMore={false} {...zherpArchiveProps} />);
 
     await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
     fireEvent.change(screen.getByLabelText('按提交人筛选'), { target: { value: 'alice' } });

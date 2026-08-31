@@ -47,6 +47,23 @@ export type ReviewSummary = {
 
 export type ReviewScope = 'active' | 'archived';
 
+export type ReviewProject = {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  displayOrder: number;
+  enabled: boolean;
+};
+
+export type ReviewProjectDirectoryItem = Omit<ReviewProject, 'enabled'> & {
+  latestReviewDate: string | null;
+  openIssueCount: number;
+  highRiskCount: number;
+  latestAutomationSyncAt: string | null;
+  syncStatus: 'waiting' | 'manual_only' | 'healthy' | 'attention';
+};
+
 export type ReviewListFilters = {
   scope?: ReviewScope;
   fromDate?: string;
@@ -645,19 +662,97 @@ async function first<T>(
   return (await DB.prepare(statement).bind(...values).first<T>()) ?? null;
 }
 
-export async function getReviewSummaries(): Promise<ReviewSummary[]> {
-  return (await getReviewPage({ scope: 'active' })).items;
+export async function getReviewSummaries(
+  projectId: number,
+): Promise<ReviewSummary[]> {
+  return (await getReviewPage(projectId, { scope: 'active' })).items;
 }
 
-export async function getCurrentReviewStats(): Promise<CurrentReviewStats> {
+export async function getEnabledReviewProject(
+  slug: string,
+): Promise<ReviewProject | null> {
+  const project = await first<Omit<ReviewProject, 'enabled'> & { enabled: number }>(
+    `SELECT id, name, slug, description, display_order AS displayOrder, enabled
+     FROM review_projects WHERE slug = ? AND enabled = 1`,
+    [slug.trim().toLowerCase()],
+  );
+  return project ? { ...project, enabled: project.enabled === 1 } : null;
+}
+
+export async function getReviewProjectDirectory(): Promise<
+  ReviewProjectDirectoryItem[]
+> {
+  const rows = await all<
+    Omit<ReviewProjectDirectoryItem, 'syncStatus'> & {
+      latestAutomationRevisionCount: number | null;
+      latestAutomationReviewedCount: number | null;
+      latestAutomationSkippedCount: number | null;
+    }
+  >(
+    `SELECT p.id, p.name, p.slug, p.description,
+       p.display_order AS displayOrder,
+       MAX(l.log_date) AS latestReviewDate,
+       COUNT(DISTINCT CASE
+         WHEN l.archived_at IS NULL AND i.source_current = 1
+          AND i.status = 'open' THEN i.id END
+       ) AS openIssueCount,
+       COUNT(DISTINCT CASE
+         WHEN l.archived_at IS NULL AND i.source_current = 1
+          AND i.status IN ('open', 'pending_review')
+          AND i.severity IN ('P1', 'P2') THEN i.id END
+       ) AS highRiskCount,
+       (SELECT a.updated_at FROM review_logs a
+        WHERE a.project_id = p.id AND a.sync_mode = 'automation'
+        ORDER BY a.updated_at DESC, a.id DESC LIMIT 1) AS latestAutomationSyncAt,
+       (SELECT a.revision_count FROM review_logs a
+        WHERE a.project_id = p.id AND a.sync_mode = 'automation'
+        ORDER BY a.updated_at DESC, a.id DESC LIMIT 1) AS latestAutomationRevisionCount,
+       (SELECT a.reviewed_count FROM review_logs a
+        WHERE a.project_id = p.id AND a.sync_mode = 'automation'
+        ORDER BY a.updated_at DESC, a.id DESC LIMIT 1) AS latestAutomationReviewedCount,
+       (SELECT a.skipped_count FROM review_logs a
+        WHERE a.project_id = p.id AND a.sync_mode = 'automation'
+        ORDER BY a.updated_at DESC, a.id DESC LIMIT 1) AS latestAutomationSkippedCount
+     FROM review_projects p
+     LEFT JOIN review_logs l ON l.project_id = p.id
+     LEFT JOIN review_issues i ON i.review_id = l.id
+     WHERE p.enabled = 1
+     GROUP BY p.id
+     ORDER BY p.display_order, p.name COLLATE NOCASE, p.id`,
+  );
+
+  return rows.map((row) => {
+    const {
+      latestAutomationRevisionCount,
+      latestAutomationReviewedCount,
+      latestAutomationSkippedCount,
+      ...project
+    } = row;
+    const syncStatus = !row.latestReviewDate
+      ? 'waiting'
+      : !row.latestAutomationSyncAt
+        ? 'manual_only'
+        : latestAutomationRevisionCount === 0 &&
+            latestAutomationReviewedCount === 0 &&
+            latestAutomationSkippedCount === 0
+          ? 'attention'
+          : 'healthy';
+    return { ...project, syncStatus };
+  });
+}
+
+export async function getCurrentReviewStats(
+  projectId: number,
+): Promise<CurrentReviewStats> {
   return (await first<CurrentReviewStats>(`SELECT COUNT(DISTINCT l.id) AS reviewCount,
       COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'open' THEN i.id END) AS openIssueCount,
       COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status = 'pending_review' THEN i.id END) AS pendingReviewCount,
       COUNT(DISTINCT CASE WHEN i.source_current = 1 AND i.status IN ('open', 'pending_review') AND i.severity IN ('P1', 'P2') THEN i.id END) AS highRiskCount
-     FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id WHERE l.archived_at IS NULL`)) ?? { reviewCount: 0, openIssueCount: 0, pendingReviewCount: 0, highRiskCount: 0 };
+     FROM review_logs l LEFT JOIN review_issues i ON i.review_id = l.id
+     WHERE l.project_id = ? AND l.archived_at IS NULL`, [projectId])) ?? { reviewCount: 0, openIssueCount: 0, pendingReviewCount: 0, highRiskCount: 0 };
 }
 
-export async function getSyncHealth(): Promise<SyncHealth> {
+export async function getSyncHealth(projectId: number): Promise<SyncHealth> {
   const latest = await first<{
     updatedAt: string;
     logDate: string;
@@ -674,8 +769,8 @@ export async function getSyncHealth(): Promise<SyncHealth> {
     'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
     'skipped_count AS skippedCount, p1_count AS p1Count,',
     'p2_count AS p2Count, p3_count AS p3Count, scope_text AS scopeText, id',
-    'FROM review_logs WHERE sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
-  ].join(' '), ['automation']);
+    'FROM review_logs WHERE project_id = ? AND sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
+  ].join(' '), [projectId, 'automation']);
   const normalizedLatest = latest ? normalizeReviewCounts(latest) : null;
   const latestRevision = normalizedLatest
     ? await first<{ revision: number }>(
@@ -683,14 +778,16 @@ export async function getSyncHealth(): Promise<SyncHealth> {
         [normalizedLatest.id],
       )
     : null;
-  const stats = await getCurrentReviewStats();
+  const stats = await getCurrentReviewStats(projectId);
   const reviewCount = await first<{ count: number }>(
-    'SELECT COUNT(*) AS count FROM review_logs WHERE archived_at IS NULL',
+    'SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND archived_at IS NULL',
+    [projectId],
   );
   const currentIssueCount = await first<{ count: number }>(
     `SELECT COUNT(*) AS count FROM review_issues i
      JOIN review_logs l ON l.id = i.review_id
-     WHERE l.archived_at IS NULL AND i.source_current = 1`,
+     WHERE l.project_id = ? AND l.archived_at IS NULL AND i.source_current = 1`,
+    [projectId],
   );
 
   return {
@@ -725,11 +822,14 @@ type IssueExportRowDb = {
   reviewId: number;
 };
 
-async function collectIssuePageItems(filters: IssueListFilters): Promise<ReviewIssueSummary[]> {
+async function collectIssuePageItems(
+  projectId: number,
+  filters: IssueListFilters,
+): Promise<ReviewIssueSummary[]> {
   const items: ReviewIssueSummary[] = [];
   let cursor = filters.cursor;
   while (items.length < EXPORT_MAX_ROWS) {
-    const page = await getIssuePage({ ...filters, cursor, limit: 50 });
+    const page = await getIssuePage(projectId, { ...filters, cursor, limit: 50 });
     items.push(...page.items);
     if (!page.hasMore || !page.nextCursor) break;
     cursor = page.nextCursor;
@@ -737,8 +837,11 @@ async function collectIssuePageItems(filters: IssueListFilters): Promise<ReviewI
   return items.slice(0, EXPORT_MAX_ROWS);
 }
 
-export async function getIssueExportRows(filters: IssueListFilters = {}): Promise<ReviewExportRow[]> {
-  const items = await collectIssuePageItems(filters);
+export async function getIssueExportRows(
+  projectId: number,
+  filters: IssueListFilters = {},
+): Promise<ReviewExportRow[]> {
+  const items = await collectIssuePageItems(projectId, filters);
   if (!items.length) return [];
   const rows = await all<IssueExportRowDb>([
     'SELECT i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
@@ -769,11 +872,14 @@ export async function getIssueExportRows(filters: IssueListFilters = {}): Promis
   });
 }
 
-export async function getReviewExportRows(filters: ReviewListFilters = {}): Promise<ReviewExportRow[]> {
+export async function getReviewExportRows(
+  projectId: number,
+  filters: ReviewListFilters = {},
+): Promise<ReviewExportRow[]> {
   const items: ReviewSummary[] = [];
   let cursor = filters.cursor;
   while (items.length < EXPORT_MAX_ROWS) {
-    const page = await getReviewPage({ ...filters, cursor, limit: 50 });
+    const page = await getReviewPage(projectId, { ...filters, cursor, limit: 50 });
     items.push(...page.items);
     if (!page.hasMore || !page.nextCursor) break;
     cursor = page.nextCursor;
@@ -892,6 +998,7 @@ function safeDetailUrl(path: string, origin: string): string {
 }
 
 export async function getReviewPage(
+  projectId: number,
   filters: ReviewListFilters = {},
 ): Promise<PageResult<ReviewSummary>> {
   const scope = normalizeScope(filters.scope);
@@ -900,14 +1007,15 @@ export async function getReviewPage(
   const useLike = keyword.length > 0 && [...keyword].length < 3;
 
   try {
-    return await queryReviewPage(filters, scope, limit, keyword, useLike);
+    return await queryReviewPage(projectId, filters, scope, limit, keyword, useLike);
   } catch (error) {
     if (!keyword || useLike || !isFtsQueryError(error)) throw error;
-    return queryReviewPage(filters, scope, limit, keyword, true);
+    return queryReviewPage(projectId, filters, scope, limit, keyword, true);
   }
 }
 
 export async function getIssuePage(
+  projectId: number,
   filters: IssueListFilters = {},
 ): Promise<PageResult<ReviewIssueSummary>> {
   const scope = normalizeScope(filters.scope);
@@ -916,10 +1024,10 @@ export async function getIssuePage(
   const useLike = keyword.length > 0 && [...keyword].length < 3;
 
   try {
-    return await queryIssuePage(filters, scope, limit, keyword, useLike);
+    return await queryIssuePage(projectId, filters, scope, limit, keyword, useLike);
   } catch (error) {
     if (!keyword || useLike || !isFtsQueryError(error)) throw error;
-    return queryIssuePage(filters, scope, limit, keyword, true);
+    return queryIssuePage(projectId, filters, scope, limit, keyword, true);
   }
 }
 
@@ -934,14 +1042,16 @@ type ReviewIssueSummaryRow = ReviewIssueSummary & {
 const ISSUE_CURSOR_FLOOR = '1000-01-01T00:00:00.000Z';
 
 async function queryReviewPage(
+  projectId: number,
   filters: ReviewListFilters,
   scope: ReviewScope,
   limit: 20 | 50,
   keyword: string,
   useLike: boolean,
 ): Promise<PageResult<ReviewSummary>> {
-  const values: SqlValue[] = [];
+  const values: SqlValue[] = [projectId];
   const where = [
+    'l.project_id = ?',
     scope === 'active' ? 'l.archived_at IS NULL' : 'l.archived_at IS NOT NULL',
   ];
   addReviewDateFilters(where, values, filters);
@@ -978,15 +1088,17 @@ async function queryReviewPage(
 }
 
 async function queryIssuePage(
+  projectId: number,
   filters: IssueListFilters,
   scope: ReviewScope,
   limit: 20 | 50,
   keyword: string,
   useLike: boolean,
 ): Promise<PageResult<ReviewIssueSummary>> {
-  const values: SqlValue[] = [];
+  const values: SqlValue[] = [projectId];
   const sortExpression = `COALESCE(i.status_updated_at, '${ISSUE_CURSOR_FLOOR}')`;
   const where = [
+    'l.project_id = ?',
     scope === 'active' ? 'l.archived_at IS NULL' : 'l.archived_at IS NOT NULL',
     'i.source_current = 1',
   ];
@@ -1230,7 +1342,10 @@ function isFtsQueryError(error: unknown): boolean {
   );
 }
 
-export async function getReviewDetail(id: number): Promise<ReviewDetail | null> {
+export async function getReviewDetail(
+  projectId: number,
+  id: number,
+): Promise<ReviewDetail | null> {
   const review = await first<ReviewRow>(
     [
       'SELECT id, log_date AS logDate, title, overview,',
@@ -1241,9 +1356,9 @@ export async function getReviewDetail(id: number): Promise<ReviewDetail | null> 
       'p2_count AS p2Count, p3_count AS p3Count,',
       'sync_mode AS syncMode, imported_at AS importedAt,',
       'updated_at AS updatedAt, archived_at AS archivedAt',
-      'FROM review_logs WHERE id = ?',
+      'FROM review_logs WHERE project_id = ? AND id = ?',
     ].join(' '),
-    [id],
+    [projectId, id],
   );
   if (!review) return null;
 
@@ -1280,13 +1395,13 @@ export async function getReviewDetail(id: number): Promise<ReviewDetail | null> 
   };
 }
 
-export async function getReviewMarkdown(id: number): Promise<{
+export async function getReviewMarkdown(projectId: number, id: number): Promise<{
   content: string;
   sourceName: string;
 } | null> {
   const review = await first<Pick<ReviewRow, 'sourceName' | 'contentObjectKey'>>(
-    'SELECT source_name AS sourceName, content_object_key AS contentObjectKey FROM review_logs WHERE id = ?',
-    [id],
+    'SELECT source_name AS sourceName, content_object_key AS contentObjectKey FROM review_logs WHERE project_id = ? AND id = ?',
+    [projectId, id],
   );
   if (!review) return null;
 

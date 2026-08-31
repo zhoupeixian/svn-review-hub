@@ -4,6 +4,7 @@ import {
   encodePageCursor,
   normalizePageSize,
 } from '../lib/review-query';
+import { legacyProjectPath } from '../lib/project-routes';
 
 describe('分页游标', () => {
   it('可以往返编码与解码', () => {
@@ -37,6 +38,17 @@ describe('分页游标', () => {
   it('将分页条数规范为 20 或 50', () => {
     expect(normalizePageSize(undefined)).toBe(20);
     expect(normalizePageSize('50')).toBe(50);
+  });
+});
+
+describe('旧全局地址兼容', () => {
+  it('转到 ZHERP 对应项目地址并完整保留重复查询参数', () => {
+    expect(legacyProjectPath('/issues', {
+      status: 'open',
+      severity: ['P1', 'P2'],
+      q: '权限 问题',
+    })).toBe('/projects/zherp/issues?status=open&severity=P1&severity=P2&q=%E6%9D%83%E9%99%90+%E9%97%AE%E9%A2%98');
+    expect(legacyProjectPath('/archive')).toBe('/projects/zherp/archive');
   });
 });
 

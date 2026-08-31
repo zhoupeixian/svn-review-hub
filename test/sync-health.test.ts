@@ -23,7 +23,7 @@ it('健康指标只认 automation 的最近成功同步，不把管理员上传�
     markdown: '# 管理员日志\n日期：2026-08-28\n审查范围：共 1 个 revision，实际审查 1 个，跳过 0 个\n总体结论：无问题\n\n| Revision | 提交人 | 提交时间 | 说明 | 结论 |\n| --- | --- | --- | --- | --- |\n| 999 | admin | 2026-08-28 09:00 | 提交 | 已审查 |\n',
     sourceKey: 'health-manual', sourceName: 'manual.md', importedBy: 'admin@example.test', syncMode: 'manual',
   });
-  const health = await getSyncHealth();
+  const health = await getSyncHealth(1);
   expect(health.latestLogDate).toBe('2026-08-27');
   expect(health.latestRevision).toBe(100);
   expect(health.latestAutomationSyncAt).toBeTruthy();

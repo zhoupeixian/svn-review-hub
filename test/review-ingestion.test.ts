@@ -732,7 +732,7 @@ describe('审查日志合并导入', () => {
 
     const changed = await ingestReview(ingestInput(changedMarkdown()));
     const afterChange = await issueRows();
-    const currentPage = await getIssuePage();
+    const currentPage = await getIssuePage(1);
     expect(changed.ingestion).toEqual({
       createdIssueCount: 1,
       updatedIssueCount: 1,

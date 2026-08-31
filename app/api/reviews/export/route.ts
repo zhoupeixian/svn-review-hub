@@ -1,10 +1,10 @@
-import { parseReviewFilters } from '@/app/api/reviews/route';
+import { parseReviewFilters } from '@/lib/review-filters';
 import { getReviewExportRows, toCsv } from '@/lib/reviews';
 
 export async function GET(request: Request) {
   try {
     const filters = parseReviewFilters(new URL(request.url));
-    const csv = '\uFEFF' + toCsv(await getReviewExportRows(filters));
+    const csv = '\uFEFF' + toCsv(await getReviewExportRows(1, filters));
     const date = new Date().toISOString().slice(0, 10);
     return new Response(csv, {
       headers: {

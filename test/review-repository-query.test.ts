@@ -4,18 +4,26 @@ import { env } from 'cloudflare:workers';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ensureReviewSchema,
+  getCurrentReviewStats,
+  getEnabledReviewProject,
   getIssuePage,
+  getReviewDetail,
+  getReviewMarkdown,
+  getReviewProjectDirectory,
   getReviewPage,
   getReviewSummaries,
+  getSyncHealth,
   rebuildReviewSearch,
 } from '../lib/reviews';
 
 type TestEnv = {
   DB: D1Database;
+  FILES: R2Bucket;
 };
 
 type ReviewFixture = {
   id: number;
+  projectId?: number;
   logDate: string;
   archived?: boolean;
   title?: string;
@@ -45,6 +53,7 @@ type IssueFixture = {
 };
 
 const DB = (env as unknown as TestEnv).DB;
+const FILES = (env as unknown as TestEnv).FILES;
 
 describe.sequential('审查日志 Repository 查询', () => {
   beforeAll(async () => {
@@ -59,8 +68,90 @@ describe.sequential('审查日志 Repository 查询', () => {
         'DELETE FROM review_revisions',
         'DELETE FROM review_logs',
         'DELETE FROM review_search',
+        'DELETE FROM review_projects WHERE id <> 1',
       ].map((sql) => DB.prepare(sql)),
     );
+  });
+
+  it('按显示顺序列出启用项目，并提供当前项目的目录统计和同步状态', async () => {
+    await DB.batch([
+      DB.prepare(
+        `UPDATE review_projects
+         SET name = 'ZHERP', description = 'ERP 主项目', display_order = 20, enabled = 1
+         WHERE id = 1`,
+      ),
+      DB.prepare(
+        `INSERT INTO review_projects (id, name, slug, description, display_order, enabled)
+         VALUES (2, '海华项目', 'haihua', '海华专项审查', 10, 1)`,
+      ),
+      DB.prepare(
+        `INSERT INTO review_projects (id, name, slug, description, display_order, enabled)
+         VALUES (3, '停用项目', 'disabled', '不应公开', 0, 0)`,
+      ),
+      DB.prepare(
+        `INSERT INTO review_projects (id, name, slug, description, display_order, enabled)
+         VALUES (4, '空项目', 'empty', '等待同步', 15, 1)`,
+      ),
+    ]);
+    await insertReviews([
+      { id: 1, projectId: 1, logDate: '2026-08-30', title: 'ZHERP 日志' },
+      { id: 2, projectId: 2, logDate: '2026-08-31', title: '海华日志' },
+      { id: 3, projectId: 3, logDate: '2026-09-01', title: '停用日志' },
+    ]);
+    await insertIssues([
+      { id: 1, reviewId: 1, severity: 'P1', title: 'ZHERP 风险', relatedRevisions: '1' },
+      { id: 2, reviewId: 2, severity: 'P2', title: '海华风险', relatedRevisions: '2' },
+      { id: 3, reviewId: 2, severity: 'P3', title: '海华普通问题', relatedRevisions: '3' },
+      { id: 4, reviewId: 2, severity: 'P3', title: '海华待确认问题', relatedRevisions: '4', status: 'pending_review' },
+    ]);
+
+    const projects = await getReviewProjectDirectory();
+
+    expect(projects.map((project) => project.slug)).toEqual(['haihua', 'empty', 'zherp']);
+    expect(projects[0]).toMatchObject({
+      name: '海华项目',
+      description: '海华专项审查',
+      latestReviewDate: '2026-08-31',
+      openIssueCount: 2,
+      highRiskCount: 1,
+    });
+    expect(projects[1]).toMatchObject({
+      slug: 'empty', latestReviewDate: null, openIssueCount: 0,
+      highRiskCount: 0, latestAutomationSyncAt: null, syncStatus: 'waiting',
+    });
+    expect(await getEnabledReviewProject('haihua')).toMatchObject({ id: 2, slug: 'haihua' });
+    expect(await getEnabledReviewProject('disabled')).toBeNull();
+    expect(await getEnabledReviewProject('missing')).toBeNull();
+  });
+
+  it('日志、问题、统计、同步状态、详情和原文只读取指定项目', async () => {
+    await DB.prepare(
+      `INSERT INTO review_projects (id, name, slug, description, display_order, enabled)
+       VALUES (2, '海华项目', 'haihua', '', 10, 1)`,
+    ).run();
+    await insertReviews([
+      { id: 70, projectId: 1, logDate: '2026-08-30', title: 'ZHERP 隔离日志' },
+      { id: 71, projectId: 2, logDate: '2026-08-31', title: '海华隔离日志' },
+    ]);
+    await insertRevisions([
+      { id: 700, reviewId: 70, revision: 57001, author: 'zherp-user' },
+      { id: 710, reviewId: 71, revision: 57001, author: 'haihua-user' },
+    ]);
+    await insertIssues([
+      { id: 700, reviewId: 70, severity: 'P1', title: 'ZHERP 问题', relatedRevisions: '57001' },
+      { id: 710, reviewId: 71, severity: 'P2', title: '海华问题', relatedRevisions: '57001' },
+    ]);
+    await FILES.put('review-logs/70.md', '# ZHERP 原文');
+    await FILES.put('review-logs/71.md', '# 海华原文');
+
+    expect((await getReviewPage(2, { scope: 'active', keyword: '隔离' })).items.map((item) => item.id)).toEqual([71]);
+    expect((await getIssuePage(2, { scope: 'active', keyword: '问题' })).items.map((item) => item.id)).toEqual([710]);
+    expect(await getCurrentReviewStats(2)).toMatchObject({ reviewCount: 1, openIssueCount: 1, highRiskCount: 1 });
+    expect(await getSyncHealth(2)).toMatchObject({ latestLogDate: '2026-08-31', latestRevision: 57001, reviewCount: 1, currentIssueCount: 1 });
+    expect(await getReviewDetail(2, 70)).toBeNull();
+    expect(await getReviewDetail(2, 71)).toMatchObject({ id: 71, title: '海华隔离日志' });
+    expect(await getReviewMarkdown(2, 70)).toBeNull();
+    expect(await getReviewMarkdown(2, 71)).toEqual({ content: '# 海华原文', sourceName: 'fixture-71.md' });
   });
 
   it('按日期和 id 分页读取当前日志，且默认 20 条、最多 50 条', async () => {
@@ -74,12 +165,12 @@ describe.sequential('审查日志 Repository 查询', () => {
     ];
     await insertReviews(fixtures);
 
-    const firstPage = await getReviewPage({ scope: 'active' });
-    const secondPage = await getReviewPage({
+    const firstPage = await getReviewPage(1, { scope: 'active' });
+    const secondPage = await getReviewPage(1, {
       scope: 'active',
       cursor: firstPage.nextCursor ?? undefined,
     });
-    const cappedPage = await getReviewPage({ scope: 'active', limit: 500 });
+    const cappedPage = await getReviewPage(1, { scope: 'active', limit: 500 });
 
     expect(firstPage.items).toHaveLength(20);
     expect(firstPage.items.map((item) => item.id)).toEqual([
@@ -102,7 +193,7 @@ describe.sequential('审查日志 Repository 查询', () => {
       scopeText: '共 24 个 revision，其中 22 个可审查，2 个按默认规则跳过。',
     }]);
 
-    const page = await getReviewPage({ scope: 'active' });
+    const page = await getReviewPage(1, { scope: 'active' });
 
     expect(page.items[0]).toMatchObject({ revisionCount: 24, reviewedCount: 22, skippedCount: 2 });
   });
@@ -158,7 +249,7 @@ describe.sequential('审查日志 Repository 查询', () => {
       },
     ]);
 
-    const page = await getReviewPage({
+    const page = await getReviewPage(1, {
       scope: 'active',
       fromDate: '2026-08-27',
       toDate: '2026-08-27',
@@ -175,7 +266,7 @@ describe.sequential('审查日志 Repository 查询', () => {
     expect(page.items[0]).not.toHaveProperty('markdown');
     expect(page.items[0]).not.toHaveProperty('contentObjectKey');
 
-    const injectedStatus = await getReviewPage({
+    const injectedStatus = await getReviewPage(1, {
       scope: 'active',
       status: "resolved' OR 1=1 --" as never,
     });
@@ -193,11 +284,11 @@ describe.sequential('审查日志 Repository 查询', () => {
       },
     ]);
 
-    const malformed = await getReviewPage({
+    const malformed = await getReviewPage(1, {
       scope: 'active',
       keyword: '" OR 1=1 --',
     });
-    const shortKeyword = await getReviewPage({
+    const shortKeyword = await getReviewPage(1, {
       scope: 'active',
       keyword: '安全',
     });
@@ -244,11 +335,11 @@ describe.sequential('审查日志 Repository 查询', () => {
       },
     ]);
 
-    const firstPage = await getIssuePage();
-    const secondPage = await getIssuePage({
+    const firstPage = await getIssuePage(1);
+    const secondPage = await getIssuePage(1, {
       cursor: firstPage.nextCursor ?? undefined,
     });
-    const archivedPage = await getIssuePage({ scope: 'archived' });
+    const archivedPage = await getIssuePage(1, { scope: 'archived' });
 
     expect(firstPage.items.map((item) => item.id)).toEqual(
       Array.from({ length: 20 }, (_, index) => 320 - index),
@@ -309,7 +400,7 @@ describe.sequential('审查日志 Repository 查询', () => {
       },
     ]);
 
-    const page = await getIssuePage({
+    const page = await getIssuePage(1, {
       scope: 'active',
       fromDate: '2026-08-27',
       toDate: '2026-08-27',
@@ -343,7 +434,7 @@ describe.sequential('审查日志 Repository 查询', () => {
       { id: 433, reviewId: 44, severity: 'P1', title: 'P1 归档问题', relatedRevisions: '56014' },
     ]);
 
-    const page = await getIssuePage({ scope: 'active', severities: ['P1', 'P2'] });
+    const page = await getIssuePage(1, { scope: 'active', severities: ['P1', 'P2'] });
 
     expect(page.items.map((item) => item.id).sort()).toEqual([430, 431]);
   });
@@ -358,17 +449,17 @@ describe.sequential('审查日志 Repository 查询', () => {
       },
     ]);
 
-    expect(await getReviewPage({ scope: 'active' })).toEqual({
+    expect(await getReviewPage(1, { scope: 'active' })).toEqual({
       items: [],
       nextCursor: null,
       hasMore: false,
     });
-    expect(await getIssuePage()).toEqual({
+    expect(await getIssuePage(1)).toEqual({
       items: [],
       nextCursor: null,
       hasMore: false,
     });
-    expect(await getReviewSummaries()).toEqual([]);
+    expect(await getReviewSummaries(1)).toEqual([]);
   });
 
   it('重建单条日志的 FTS 行，不影响其他日志索引', async () => {
@@ -395,14 +486,15 @@ async function insertReviews(fixtures: ReviewFixture[]): Promise<void> {
     fixtures.map((fixture) =>
       DB.prepare(
         `INSERT INTO review_logs (
-          id, log_date, source_key, source_name, source_hash, content_object_key,
+          id, project_id, log_date, source_key, source_name, source_hash, content_object_key,
           title, overview, scope_text, revision_count, reviewed_count,
           skipped_count, p1_count, p2_count, p3_count, sync_mode, imported_by,
           imported_at, updated_at, archived_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0,
                   'automation', 'test', ?, ?, ?)`,
       ).bind(
         fixture.id,
+        fixture.projectId ?? 1,
         fixture.logDate,
         `fixture/${fixture.id}.md`,
         `fixture-${fixture.id}.md`,

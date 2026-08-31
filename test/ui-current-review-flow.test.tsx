@@ -7,6 +7,8 @@ import IssueExplorer from '../app/issues/issue-explorer';
 import IssueStatusPanel from '../app/components/issue-status-panel';
 import ThemeSwitcher from '../app/components/theme-switcher';
 import HomeQuickSearch from '../app/components/home-quick-search';
+import ProjectDirectory from '../app/components/project-directory';
+import ProjectSwitcher from '../app/components/project-switcher';
 
 const review = {
   id: 1, logDate: '2026-08-27', title: '当前日志', overview: '摘要', scopeText: '',
@@ -20,6 +22,17 @@ const issue = {
   logDate: '2026-08-27', reviewTitle: '当前日志', authors: 'alice',
 };
 
+const zherpReviewProps = {
+  projectBasePath: '/projects/zherp',
+  reviewsApiPath: '/api/projects/zherp/reviews',
+};
+
+const zherpIssueProps = {
+  projectBasePath: '/projects/zherp',
+  issuesApiPath: '/api/projects/zherp/issues',
+  issuesExportPath: '/api/issues/export',
+};
+
 describe('当前审查协作 UI', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -29,17 +42,85 @@ describe('当前审查协作 UI', () => {
 
   it('首页加载更多追加 API 返回的下一页', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({ items: [{ ...review, id: 2, logDate: '2026-08-26' }], nextCursor: null, hasMore: false }), { status: 200 }));
-    render(<ReviewExplorer initialItems={[review]} initialCursor="next" initialHasMore />);
+    render(<ReviewExplorer initialItems={[review]} initialCursor="next" initialHasMore {...zherpReviewProps} />);
     await userEvent.click(screen.getByRole('button', { name: '加载更多日志' }));
     expect(await screen.findByText('2026-08-26')).toBeTruthy();
-    expect(fetch).toHaveBeenCalledWith('/api/reviews?scope=active&cursor=next');
+    expect(fetch).toHaveBeenCalledWith('/api/projects/zherp/reviews?scope=active&cursor=next');
+  });
+
+  it('项目目录展示项目状态和统计，并从项目卡进入独立首页', () => {
+    render(<ProjectDirectory projects={[
+      {
+        id: 2, name: '海华项目', slug: 'haihua', description: '海华专项审查', displayOrder: 10,
+        latestReviewDate: '2026-08-31', openIssueCount: 3, highRiskCount: 1,
+        latestAutomationSyncAt: '2026-08-31T10:00:00.000Z', syncStatus: 'healthy',
+      },
+      {
+        id: 1, name: 'ZHERP', slug: 'zherp', description: '', displayOrder: 20,
+        latestReviewDate: null, openIssueCount: 0, highRiskCount: 0,
+        latestAutomationSyncAt: null, syncStatus: 'waiting',
+      },
+    ]} />);
+
+    expect(screen.getByRole('link', { name: /海华项目/ }).getAttribute('href')).toBe('/projects/haihua');
+    expect(screen.getByText('最近审查：2026-08-31')).toBeTruthy();
+    expect(screen.getByText('待处理问题 3')).toBeTruthy();
+    expect(screen.getByText('P1/P2 风险 1')).toBeTruthy();
+    expect(screen.getByText('最近接收正常')).toBeTruthy();
+    expect(screen.getAllByText('等待首次同步')).toHaveLength(2);
+  });
+
+  it('项目切换和项目内日志链接始终进入目标项目且不继承筛选状态', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [{ ...review, id: 2, logDate: '2026-08-26' }], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<>
+      <ProjectSwitcher
+        currentSlug="haihua"
+        projects={[{ name: '海华项目', slug: 'haihua' }, { name: 'ZHERP', slug: 'zherp' }]}
+      />
+      <HomeQuickSearch action="/projects/haihua/issues" />
+      <ReviewExplorer
+        initialItems={[review]}
+        initialCursor="next"
+        initialHasMore
+        projectBasePath="/projects/haihua"
+        reviewsApiPath="/api/projects/haihua/reviews"
+      />
+    </>);
+
+    expect(screen.getByRole('link', { name: '切换到 ZHERP' }).getAttribute('href')).toBe('/projects/zherp');
+    expect(screen.getByRole('search').getAttribute('action')).toBe('/projects/haihua/issues');
+    expect(screen.getByRole('link', { name: '打开审查日志 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/1');
+    await userEvent.click(screen.getByRole('button', { name: '加载更多日志' }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/haihua/reviews?scope=active&cursor=next');
+  });
+
+  it('项目问题看板只使用当前项目的页面和查询接口', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [issue], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<IssueExplorer
+      initialItems={[issue]}
+      initialCursor={null}
+      initialHasMore={false}
+      projectBasePath="/projects/haihua"
+      issuesApiPath="/api/projects/haihua/issues"
+      issuesExportPath={null}
+    />);
+
+    expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/1#issue-42');
+    expect(screen.queryByRole('link', { name: '导出 Excel 跟进表' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/issues?');
+    expect(window.location.pathname).toBe('/projects/haihua/issues');
   });
 
   it('问题卡片带数据库锚点和当前筛选操作', () => {
-    window.history.pushState({}, '', '/issues?status=open&severity=P1');
-    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+    window.history.pushState({}, '', '/projects/zherp/issues?status=open&severity=P1');
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore {...zherpIssueProps} />);
     expect(document.getElementById('issue-42')).toBeTruthy();
-    expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/reviews/1#issue-42');
+    expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/projects/zherp/reviews/1#issue-42');
     expect(screen.getByRole('button', { name: '复制当前筛选链接' })).toBeTruthy();
     expect(screen.getByRole('link', { name: '导出 Excel 跟进表' }).getAttribute('href')).toContain('status=open&severity=P1');
     expect(document.querySelector('#issue-42 [data-severity="P1"]')?.textContent).toBe('P1');
@@ -47,7 +128,7 @@ describe('当前审查协作 UI', () => {
   });
 
   it('严重级别和状态下拉框暴露当前选中值供主题着色', async () => {
-    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore={false} />);
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore={false} {...zherpIssueProps} />);
     const severity = screen.getByLabelText('按严重级别筛选');
     const status = screen.getByLabelText('按状态筛选');
     expect(severity.getAttribute('data-severity')).toBe('all');
@@ -72,9 +153,9 @@ describe('当前审查协作 UI', () => {
   });
 
   it('主页快捷查询用原生 GET 将关键词、Revision 和日期带到问题看板', () => {
-    render(<HomeQuickSearch />);
+    render(<HomeQuickSearch action="/projects/zherp/issues" />);
     const form = screen.getByRole('search');
-    expect(form.getAttribute('action')).toBe('/issues');
+    expect(form.getAttribute('action')).toBe('/projects/zherp/issues');
     expect(form.getAttribute('method')).toBe('get');
     expect(screen.getByLabelText('快捷关键词').getAttribute('name')).toBe('q');
     expect(screen.getByLabelText('快捷 Revision').getAttribute('name')).toBe('revision');
@@ -85,7 +166,7 @@ describe('当前审查协作 UI', () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [issue], nextCursor: null, hasMore: false,
     }), { status: 200 }));
-    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore {...zherpIssueProps} />);
 
     expect(screen.queryByLabelText('按作者筛选')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
@@ -103,7 +184,7 @@ describe('当前审查协作 UI', () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [issue], nextCursor: null, hasMore: false,
     }), { status: 200 }));
-    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore />);
+    render(<IssueExplorer initialItems={[issue]} initialCursor={null} initialHasMore {...zherpIssueProps} />);
 
     await userEvent.selectOptions(screen.getByLabelText('按严重级别筛选'), 'P1,P2');
     await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
@@ -123,7 +204,7 @@ describe('当前审查协作 UI', () => {
         items: [{ ...issue, id: 44, title: '已解决问题下一页', status: 'resolved' }],
         nextCursor: null, hasMore: false,
       }), { status: 200 }));
-    render(<IssueExplorer initialItems={[issue]} initialCursor="open-next" initialHasMore />);
+    render(<IssueExplorer initialItems={[issue]} initialCursor="open-next" initialHasMore {...zherpIssueProps} />);
 
     await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), 'resolved');
     await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
@@ -142,7 +223,7 @@ describe('当前审查协作 UI', () => {
   it('日期和 Revision 筛选可见，刷新首屏并让加载更多沿用全部参数', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     fetchMock.mockImplementation((input) => Promise.resolve(new Response(JSON.stringify({ items: [input.toString().includes('cursor=') ? { ...issue, id: 46, title: '日期版本下一页' } : { ...issue, id: 45, title: '日期版本问题' }], nextCursor: input.toString().includes('cursor=') ? null : 'filtered-next', hasMore: !input.toString().includes('cursor=') }), { status: 200 })));
-    render(<IssueExplorer initialItems={[issue]} initialCursor="old-next" initialHasMore />);
+    render(<IssueExplorer initialItems={[issue]} initialCursor="old-next" initialHasMore {...zherpIssueProps} />);
 
     await userEvent.click(screen.getByRole('button', { name: '更多条件' }));
     fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-08-01' } });

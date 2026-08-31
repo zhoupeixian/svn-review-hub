@@ -20,6 +20,9 @@ type Props = {
   initialCursor: string | null;
   initialHasMore: boolean;
   filters?: ArchiveFilters;
+  projectBasePath: string;
+  reviewsApiPath: string;
+  reviewsExportPath: string | null;
 };
 
 export default function ArchiveExplorer({
@@ -27,6 +30,9 @@ export default function ArchiveExplorer({
   initialCursor,
   initialHasMore,
   filters = {},
+  projectBasePath,
+  reviewsApiPath,
+  reviewsExportPath,
 }: Props) {
   const [items, setItems] = useState(initialItems);
   const [cursor, setCursor] = useState(initialCursor);
@@ -49,10 +55,10 @@ export default function ArchiveExplorer({
     setActiveFilters(next); setDraftFilters(next);
     const urlParams = new URLSearchParams({ scope: 'archived' });
     appendFilters(urlParams, next);
-    window.history.replaceState({}, '', `/archive?${urlParams.toString()}`);
+    window.history.replaceState({}, '', `${projectBasePath}/archive?${urlParams.toString()}`);
     setItems([]); setCursor(null); setHasMore(false); setLoading(true); setError('');
     try {
-      const response = await fetch('/api/reviews?' + urlParams.toString());
+      const response = await fetch(`${reviewsApiPath}?${urlParams.toString()}`);
       if (!response.ok) throw new Error();
       const page = await response.json() as PageResult<ReviewSummary>;
       if (request !== requestId.current) return;
@@ -70,7 +76,7 @@ export default function ArchiveExplorer({
       const params = new URLSearchParams({ scope: 'archived' });
       appendFilters(params, activeFilters);
       params.set('cursor', cursor);
-      const response = await fetch('/api/reviews?' + params.toString());
+      const response = await fetch(`${reviewsApiPath}?${params.toString()}`);
       if (!response.ok) throw new Error('加载失败');
       const page = await response.json() as PageResult<ReviewSummary>;
       if (request !== requestId.current) return;
@@ -83,8 +89,9 @@ export default function ArchiveExplorer({
 
   const shareParams = new URLSearchParams({ scope: 'archived' });
   appendFilters(shareParams, activeFilters);
-  const share = typeof window === 'undefined' ? `/archive?${shareParams.toString()}` : `${window.location.origin}/archive?${shareParams.toString()}`;
-  const exportHref = `/api/reviews/export?${shareParams.toString()}`;
+  const sharePath = `${projectBasePath}/archive?${shareParams.toString()}`;
+  const share = typeof window === 'undefined' ? sharePath : `${window.location.origin}${sharePath}`;
+  const exportHref = reviewsExportPath ? `${reviewsExportPath}?${shareParams.toString()}` : null;
   async function copyShareLink() {
     try { await navigator.clipboard?.writeText(share); } catch { /* clipboard permission is optional */ }
     setCopied(true);
@@ -106,7 +113,7 @@ export default function ArchiveExplorer({
         {advanced && <div className="mt-3 grid gap-3 md:grid-cols-4"><label>开始日期<input type="date" aria-label="开始日期" value={draftFilters.fromDate ?? ''} onChange={(e) => updateDraft('fromDate', e.target.value)} /></label><label>结束日期<input type="date" aria-label="结束日期" value={draftFilters.toDate ?? ''} onChange={(e) => updateDraft('toDate', e.target.value)} /></label><label>Revision<input inputMode="numeric" aria-label="按 Revision 筛选" value={draftFilters.revision ?? ''} onChange={(e) => updateDraft('revision', e.target.value)} /></label><label>提交人<input aria-label="按提交人筛选" value={draftFilters.author ?? ''} onChange={(e) => updateDraft('author', e.target.value)} /></label></div>}
         <div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" className="filter-apply" onClick={() => applyFilters()}>应用筛选</button><button type="button" className="filter-quiet" onClick={() => applyFilters({})}>重置</button><span className="text-xs text-[#718077]">导出最多包含 1,000 份归档日志。</span></div>
       </div>
-      <div className="mb-5 flex flex-wrap justify-end gap-3"><button type="button" onClick={copyShareLink} className="filter-quiet">{copied ? '已复制' : '复制当前筛选链接'}</button><a href={exportHref} className="filter-apply rounded-lg px-3 py-2 text-sm font-bold">导出归档清单</a></div>
+      <div className="mb-5 flex flex-wrap justify-end gap-3"><button type="button" onClick={copyShareLink} className="filter-quiet">{copied ? '已复制' : '复制当前筛选链接'}</button>{exportHref && <a href={exportHref} className="filter-apply rounded-lg px-3 py-2 text-sm font-bold">导出归档清单</a>}</div>
       <div className="grid gap-4">
         {items.map((review) => (
           <article key={review.id} aria-label={review.title} className="rounded-2xl border border-[#dfe7df] bg-white p-5 sm:p-6">
@@ -127,7 +134,7 @@ export default function ArchiveExplorer({
               </div>
             </div>
             <div className="mt-5 border-t border-[#edf1ed] pt-4">
-              <a href={`/reviews/${review.id}`} className="text-sm font-bold text-[#1e6b4e]">查看归档原文与历史 →</a>
+              <a href={`${projectBasePath}/reviews/${review.id}`} className="text-sm font-bold text-[#1e6b4e]">查看归档原文与历史 →</a>
             </div>
           </article>
         ))}
