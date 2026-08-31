@@ -443,6 +443,7 @@ describe('审查日志合并导入', () => {
   it.each([
     ['显式跳过零个', '共 5 个 revision，实际审查 4 个，跳过 0 个'],
     ['显式审查零个', '共 5 个 revision，实际审查 0 个，跳过 2 个'],
+    ['显式审查和跳过均为零', '共 5 个 revision，实际审查 0 个，跳过 0 个'],
   ])('拒绝%s但总数矛盾的日志', async (_caseName, scope) => {
     await expect(
       ingestReview(ingestInput(fiveRevisionMarkdown(scope))),

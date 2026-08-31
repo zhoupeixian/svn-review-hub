@@ -44,7 +44,7 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
   const overview = lineValue(lines, '总体结论：');
   const revisionTable = parseRevisionTable(lines);
   const scopeCounts = reconcileReviewCounts(
-    parseReviewScopeCounts(scopeText),
+    parseReviewScopeCountsWithEvidence(scopeText),
     revisionTable,
   );
 
@@ -155,6 +155,20 @@ export function reviewScopeDeclaresZeroRevisions(scopeText: string): boolean {
 }
 
 export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> {
+  const counts = parseReviewScopeCountsWithEvidence(scopeText);
+  return {
+    revisionCount: counts.revisionCount,
+    reviewedCount: counts.reviewedCount,
+    skippedCount: counts.skippedCount,
+  };
+}
+
+type ParsedScopeCounts = Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> & {
+  reviewedCountDeclared: boolean;
+  skippedCountDeclared: boolean;
+};
+
+function parseReviewScopeCountsWithEvidence(scopeText: string): ParsedScopeCounts {
   const clauses = reviewScopeClauses(scopeText);
   const parsedRevisionCount = countFromClauses(clauses, revisionCountPatterns);
   const parsedReviewedCount = countFromClauses(clauses, [
@@ -186,33 +200,35 @@ export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'r
       (parsedReviewedCount !== null && revisionCount >= parsedReviewedCount
         ? revisionCount - parsedReviewedCount
         : 0),
+    reviewedCountDeclared: parsedReviewedCount !== null,
+    skippedCountDeclared: parsedSkippedCount !== null,
   };
 }
 
 function reconcileReviewCounts(
-  counts: Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'>,
+  counts: ParsedScopeCounts,
   table: ParsedRevisionTable,
 ): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount' | 'revisionTableMode'> {
   const rowCount = table.revisions.length;
   if (rowCount > 0 && counts.revisionCount > 0 && rowCount === counts.revisionCount) {
-    if (counts.reviewedCount === 0 && counts.skippedCount === 0) {
+    if (!counts.reviewedCountDeclared && !counts.skippedCountDeclared) {
       const skippedCount = table.revisions.filter((revision) =>
         /跳过/.test(revision.conclusion),
       ).length;
       return {
-        ...counts,
+        revisionCount: counts.revisionCount,
         reviewedCount: counts.revisionCount - skippedCount,
         skippedCount,
         revisionTableMode: 'complete',
       };
     }
-    return { ...counts, revisionTableMode: 'complete' };
+    return publicCounts(counts, 'complete');
   }
   if (rowCount > 0 && counts.reviewedCount > 0 && rowCount === counts.reviewedCount) {
-    return { ...counts, revisionTableMode: 'reviewed-only' };
+    return publicCounts(counts, 'reviewed-only');
   }
   if (table.mode !== 'reviewed-only' || rowCount === 0) {
-    return { ...counts, revisionTableMode: table.mode };
+    return publicCounts(counts, table.mode);
   }
 
   if (counts.revisionCount === 0) {
@@ -223,15 +239,27 @@ function reconcileReviewCounts(
       revisionTableMode: 'reviewed-only',
     };
   }
-  if (counts.reviewedCount === 0 && counts.skippedCount === 0) {
+  if (!counts.reviewedCountDeclared && !counts.skippedCountDeclared) {
     return {
-      ...counts,
+      revisionCount: counts.revisionCount,
       reviewedCount: rowCount,
       skippedCount: Math.max(0, counts.revisionCount - rowCount),
       revisionTableMode: 'reviewed-only',
     };
   }
-  return { ...counts, revisionTableMode: table.mode };
+  return publicCounts(counts, table.mode);
+}
+
+function publicCounts(
+  counts: ParsedScopeCounts,
+  revisionTableMode: ParsedReview['revisionTableMode'],
+): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount' | 'revisionTableMode'> {
+  return {
+    revisionCount: counts.revisionCount,
+    reviewedCount: counts.reviewedCount,
+    skippedCount: counts.skippedCount,
+    revisionTableMode,
+  };
 }
 
 function countSeverity(markdown: string, severity: 'P1' | 'P2' | 'P3'): number {
