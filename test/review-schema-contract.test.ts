@@ -6,9 +6,11 @@ import { ensureReviewSchema } from '../lib/reviews';
 
 type TestEnv = {
   DB: D1Database;
+  FILES: R2Bucket;
+  TEST_MIGRATIONS: Array<{ name: string; queries: string[] }>;
 };
 
-const DB = (env as unknown as TestEnv).DB;
+const { DB, FILES, TEST_MIGRATIONS } = env as unknown as TestEnv;
 
 async function tableColumns(table: string): Promise<string[]> {
   const result = await DB.prepare(`PRAGMA table_info(${table})`).all<{
@@ -125,7 +127,406 @@ async function resetToLegacySchema(): Promise<void> {
   ).run();
 }
 
+async function indexColumns(index: string): Promise<string[]> {
+  const result = await DB.prepare(`PRAGMA index_info(${index})`).all<{
+    name: string;
+  }>();
+  return (result.results ?? []).map((column) => column.name);
+}
+
+async function resetToPreProjectSchema(): Promise<void> {
+  const statements = [
+    'DROP TABLE IF EXISTS review_search',
+    'DROP TABLE IF EXISTS review_issue_events',
+    'DROP TABLE IF EXISTS anonymous_update_limits',
+    'DROP TABLE IF EXISTS archive_operation_previews',
+    'DROP TABLE IF EXISTS review_issues',
+    'DROP TABLE IF EXISTS review_revisions',
+    'DROP TABLE IF EXISTS review_logs',
+    'DROP TABLE IF EXISTS review_projects',
+    `CREATE TABLE review_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      log_date TEXT NOT NULL,
+      source_key TEXT NOT NULL UNIQUE,
+      source_name TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      content_object_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      overview TEXT NOT NULL,
+      scope_text TEXT NOT NULL,
+      revision_count INTEGER NOT NULL DEFAULT 0,
+      reviewed_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0,
+      p1_count INTEGER NOT NULL DEFAULT 0,
+      p2_count INTEGER NOT NULL DEFAULT 0,
+      p3_count INTEGER NOT NULL DEFAULT 0,
+      sync_mode TEXT NOT NULL,
+      imported_by TEXT NOT NULL,
+      imported_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT
+    )`,
+    `CREATE TABLE review_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
+      author TEXT NOT NULL,
+      committed_at TEXT NOT NULL,
+      description TEXT NOT NULL,
+      conclusion TEXT NOT NULL,
+      UNIQUE(review_id, revision),
+      FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE review_issues (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      issue_key TEXT,
+      severity TEXT NOT NULL,
+      title TEXT NOT NULL,
+      related_revisions TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      status_note TEXT,
+      status_updated_at TEXT,
+      source_current INTEGER NOT NULL DEFAULT 1,
+      version INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE review_issue_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      issue_id INTEGER NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      note TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(issue_id) REFERENCES review_issues(id) ON DELETE CASCADE
+    )`,
+  ];
+  await DB.batch(statements.map((statement) => DB.prepare(statement)));
+
+  await DB.batch([
+    DB.prepare(
+      `INSERT INTO review_logs (
+        id, log_date, source_key, source_name, source_hash, content_object_key,
+        title, overview, scope_text, revision_count, reviewed_count, skipped_count,
+        p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at,
+        updated_at, archived_at
+      ) VALUES (1, '2026-08-20', 'legacy/active.md', 'active.md', 'active-hash',
+                'review-logs/2026-08-20/active.md', '活动日志', '活动概览', 'r123',
+                1, 1, 0, 1, 0, 0, 'automation', 'legacy-importer',
+                '2026-08-20T00:00:00.000Z', '2026-08-21T00:00:00.000Z', NULL)`,
+    ),
+    DB.prepare(
+      `INSERT INTO review_logs (
+        id, log_date, source_key, source_name, source_hash, content_object_key,
+        title, overview, scope_text, revision_count, reviewed_count, skipped_count,
+        p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at,
+        updated_at, archived_at
+      ) VALUES (2, '2026-08-19', 'legacy/archived.md', 'archived.md', 'archived-hash',
+                'review-logs/2026-08-19/archived.md', '归档日志', '归档概览', 'r122',
+                1, 1, 0, 0, 1, 0, 'manual', 'admin@example.com',
+                '2026-08-19T00:00:00.000Z', '2026-08-22T00:00:00.000Z',
+                '2026-08-23T00:00:00.000Z')`,
+    ),
+    DB.prepare(
+      `INSERT INTO review_revisions (
+        id, review_id, revision, author, committed_at, description, conclusion
+      ) VALUES (30, 1, 123, 'alice', '2026-08-20T09:00:00.000Z',
+                '历史提交', '已审查')`,
+    ),
+    DB.prepare(
+      `INSERT INTO review_issues (
+        id, review_id, issue_key, severity, title, related_revisions, detail,
+        status, status_note, status_updated_at, source_current, version
+      ) VALUES (10, 1, 'p1:旧问题:123', 'P1', '旧问题', '123', '历史问题详情',
+                'resolved', '历史状态不得覆盖', '2026-08-21T10:00:00.000Z', 1, 4)`,
+    ),
+    DB.prepare(
+      `INSERT INTO review_issue_events (
+        id, issue_id, from_status, to_status, note, created_at
+      ) VALUES (20, 10, 'pending_review', 'resolved', '历史复核记录',
+                '2026-08-21T10:00:00.000Z')`,
+    ),
+  ]);
+}
+
 describe.sequential('审查生命周期 D1 schema', () => {
+  it('迁移创建默认 ZHERP 审查项目和日志归属', async () => {
+    expect(await tableColumns('review_projects')).toEqual([
+      'id',
+      'name',
+      'slug',
+      'description',
+      'display_order',
+      'enabled',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(
+      await DB.prepare(
+        `SELECT id, name, slug, description,
+                display_order AS displayOrder, enabled
+         FROM review_projects`,
+      ).first(),
+    ).toEqual({
+      id: 1,
+      name: 'ZHERP',
+      slug: 'zherp',
+      description: '',
+      displayOrder: 0,
+      enabled: 1,
+    });
+    expect(await tableColumns('review_logs')).toContain('project_id');
+    expect(await foreignKeyTargets('review_logs')).toContain(
+      'review_projects',
+    );
+  });
+
+  it('部署迁移可升级含历史数据的项目化前数据库', async () => {
+    await resetToPreProjectSchema();
+    const migration = TEST_MIGRATIONS.find((item) =>
+      item.name.startsWith('0003_'),
+    );
+    expect(migration).toBeDefined();
+
+    await DB.batch(
+      migration!.queries.map((query) => DB.prepare(query)),
+    );
+
+    expect(
+      await DB.prepare(
+        `SELECT l.id, p.slug AS projectSlug, l.archived_at AS archivedAt
+         FROM review_logs l
+         JOIN review_projects p ON p.id = l.project_id
+         ORDER BY l.id`,
+      ).all(),
+    ).toMatchObject({
+      results: [
+        { id: 1, projectSlug: 'zherp', archivedAt: null },
+        {
+          id: 2,
+          projectSlug: 'zherp',
+          archivedAt: '2026-08-23T00:00:00.000Z',
+        },
+      ],
+    });
+    expect(
+      await DB.prepare('SELECT id FROM review_revisions ORDER BY id').all(),
+    ).toMatchObject({ results: [{ id: 30 }] });
+    expect(
+      await DB.prepare(
+        'SELECT id, status, status_note AS statusNote, version FROM review_issues ORDER BY id',
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          id: 10,
+          status: 'resolved',
+          statusNote: '历史状态不得覆盖',
+          version: 4,
+        },
+      ],
+    });
+    expect(
+      await DB.prepare('SELECT id FROM review_issue_events ORDER BY id').all(),
+    ).toMatchObject({ results: [{ id: 20 }] });
+    expect(
+      await indexColumns('idx_review_logs_project_source_key'),
+    ).toEqual(['project_id', 'source_key']);
+    expect(await DB.prepare('PRAGMA foreign_key_check').all()).toMatchObject({
+      results: [],
+    });
+  });
+
+  it('幂等升级项目化前的数据库并完整保留历史数据和原文', async () => {
+    await resetToPreProjectSchema();
+    await FILES.put(
+      'review-logs/2026-08-20/active.md',
+      '# 活动日志\n历史原文',
+    );
+    await FILES.put(
+      'review-logs/2026-08-19/archived.md',
+      '# 归档日志\n历史原文',
+    );
+
+    vi.resetModules();
+    const firstUpgrade = await import('../lib/reviews');
+    await firstUpgrade.ensureReviewSchema();
+
+    expect(
+      await DB.prepare(
+        `SELECT l.id, p.slug AS projectSlug, l.source_key AS sourceKey,
+                l.source_name AS sourceName, l.source_hash AS sourceHash,
+                l.content_object_key AS contentObjectKey, l.sync_mode AS syncMode,
+                l.imported_by AS importedBy, l.imported_at AS importedAt,
+                l.updated_at AS updatedAt, l.archived_at AS archivedAt
+         FROM review_logs l
+         JOIN review_projects p ON p.id = l.project_id
+         ORDER BY l.id`,
+      ).all(),
+    ).toEqual({
+      success: true,
+      meta: expect.any(Object),
+      results: [
+        {
+          id: 1,
+          projectSlug: 'zherp',
+          sourceKey: 'legacy/active.md',
+          sourceName: 'active.md',
+          sourceHash: 'active-hash',
+          contentObjectKey: 'review-logs/2026-08-20/active.md',
+          syncMode: 'automation',
+          importedBy: 'legacy-importer',
+          importedAt: '2026-08-20T00:00:00.000Z',
+          updatedAt: '2026-08-21T00:00:00.000Z',
+          archivedAt: null,
+        },
+        {
+          id: 2,
+          projectSlug: 'zherp',
+          sourceKey: 'legacy/archived.md',
+          sourceName: 'archived.md',
+          sourceHash: 'archived-hash',
+          contentObjectKey: 'review-logs/2026-08-19/archived.md',
+          syncMode: 'manual',
+          importedBy: 'admin@example.com',
+          importedAt: '2026-08-19T00:00:00.000Z',
+          updatedAt: '2026-08-22T00:00:00.000Z',
+          archivedAt: '2026-08-23T00:00:00.000Z',
+        },
+      ],
+    });
+    expect(
+      await DB.prepare(
+        `SELECT r.id, r.revision, r.author, p.slug AS projectSlug
+         FROM review_revisions r
+         JOIN review_logs l ON l.id = r.review_id
+         JOIN review_projects p ON p.id = l.project_id`,
+      ).first(),
+    ).toEqual({ id: 30, revision: 123, author: 'alice', projectSlug: 'zherp' });
+    expect(
+      await DB.prepare(
+        `SELECT i.id, i.status, i.status_note AS statusNote, i.version,
+                e.id AS eventId, e.note, p.slug AS projectSlug
+         FROM review_issues i
+         JOIN review_issue_events e ON e.issue_id = i.id
+         JOIN review_logs l ON l.id = i.review_id
+         JOIN review_projects p ON p.id = l.project_id`,
+      ).first(),
+    ).toEqual({
+      id: 10,
+      status: 'resolved',
+      statusNote: '历史状态不得覆盖',
+      version: 4,
+      eventId: 20,
+      note: '历史复核记录',
+      projectSlug: 'zherp',
+    });
+    expect(
+      await FILES.get('review-logs/2026-08-20/active.md').then((object) =>
+        object?.text(),
+      ),
+    ).toBe('# 活动日志\n历史原文');
+
+    expect((await firstUpgrade.getReviewPage()).items.map((item) => item.id)).toEqual([1]);
+    expect(
+      (await firstUpgrade.getReviewPage({ scope: 'archived' })).items.map(
+        (item) => item.id,
+      ),
+    ).toEqual([2]);
+    expect((await firstUpgrade.getIssuePage()).items.map((item) => item.id)).toEqual([10]);
+
+    vi.resetModules();
+    const secondUpgrade = await import('../lib/reviews');
+    await secondUpgrade.ensureReviewSchema();
+    expect(
+      await DB.prepare(
+        "SELECT COUNT(*) AS count FROM review_projects WHERE slug = 'zherp'",
+      ).first(),
+    ).toEqual({ count: 1 });
+    expect(
+      await DB.prepare('PRAGMA foreign_key_check').all(),
+    ).toMatchObject({ results: [] });
+    expect(
+      await DB.prepare(
+        'SELECT status, status_note AS statusNote, version FROM review_issues WHERE id = 10',
+      ).first(),
+    ).toEqual({
+      status: 'resolved',
+      statusNote: '历史状态不得覆盖',
+      version: 4,
+    });
+  });
+
+  it('日志来源只在审查项目内唯一，相同 Revision 和问题可跨项目共存', async () => {
+    expect(
+      await indexColumns('idx_review_logs_project_source_key'),
+    ).toEqual(['project_id', 'source_key']);
+    await DB.prepare(
+      `INSERT INTO review_projects (
+        id, name, slug, description, display_order, enabled
+      ) VALUES (2, '第二项目', 'second-project', '', 1, 1)`,
+    ).run();
+    await DB.prepare(
+      `INSERT INTO review_logs (
+        project_id, log_date, source_key, source_name, source_hash,
+        content_object_key, title, overview, scope_text, revision_count,
+        reviewed_count, skipped_count, p1_count, p2_count, p3_count,
+        sync_mode, imported_by, imported_at, updated_at, archived_at
+      )
+      SELECT 2, log_date, source_key, source_name, source_hash,
+             content_object_key, title, overview, scope_text, revision_count,
+             reviewed_count, skipped_count, p1_count, p2_count, p3_count,
+             sync_mode, imported_by, imported_at, updated_at, archived_at
+      FROM review_logs WHERE id = 1`,
+    ).run();
+    const secondReview = await DB.prepare(
+      "SELECT id FROM review_logs WHERE project_id = 2 AND source_key = 'legacy/active.md'",
+    ).first<{ id: number }>();
+    await DB.batch([
+      DB.prepare(
+        `INSERT INTO review_revisions (
+          review_id, revision, author, committed_at, description, conclusion
+        ) VALUES (?, 123, 'alice', '2026-08-20T09:00:00.000Z',
+                  '另一项目的提交', '已审查')`,
+      ).bind(secondReview!.id),
+      DB.prepare(
+        `INSERT INTO review_issues (
+          review_id, issue_key, severity, title, related_revisions, detail
+        ) VALUES (?, 'p1:旧问题:123', 'P1', '旧问题', '123', '另一项目的问题')`,
+      ).bind(secondReview!.id),
+    ]);
+
+    await expect(
+      DB.prepare(
+        `INSERT INTO review_logs (
+          project_id, log_date, source_key, source_name, source_hash,
+          content_object_key, title, overview, scope_text, revision_count,
+          reviewed_count, skipped_count, p1_count, p2_count, p3_count,
+          sync_mode, imported_by, imported_at, updated_at
+        )
+        SELECT 2, log_date, source_key, source_name, source_hash,
+               content_object_key, title, overview, scope_text, revision_count,
+               reviewed_count, skipped_count, p1_count, p2_count, p3_count,
+               sync_mode, imported_by, imported_at, updated_at
+        FROM review_logs WHERE id = 1`,
+      ).run(),
+    ).rejects.toThrow();
+    expect(
+      await DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM review_revisions r
+         JOIN review_logs l ON l.id = r.review_id
+         WHERE r.revision = 123 AND l.project_id IN (1, 2)`,
+      ).first(),
+    ).toEqual({ count: 2 });
+
+    await DB.prepare('DELETE FROM review_projects WHERE id = 2').run();
+    expect(await DB.prepare('PRAGMA foreign_key_check').all()).toMatchObject({
+      results: [],
+    });
+  });
+
   it('迁移创建生命周期字段、索引、短期表和 FTS5 表', async () => {
     expect(await tableColumns('review_logs')).toContain('archived_at');
     expect(await tableColumns('review_issues')).toEqual(
