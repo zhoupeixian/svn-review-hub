@@ -874,6 +874,16 @@ describe('审查日志合并导入', () => {
         parsedIssueCount: 2,
       },
     });
+    expect(
+      await DB.prepare(
+        `SELECT p.slug
+         FROM review_logs l
+         JOIN review_projects p ON p.id = l.project_id
+         WHERE l.id = ?`,
+      )
+        .bind(first.id)
+        .first(),
+    ).toEqual({ slug: 'zherp' });
 
     expect(
       isSyncRequestAuthorized(

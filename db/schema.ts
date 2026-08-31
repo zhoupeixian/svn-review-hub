@@ -8,10 +8,39 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import { ISSUE_STATUSES } from '../lib/issue-lifecycle';
 
+export const reviewProjects = sqliteTable(
+  'review_projects',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    description: text('description').notNull().default(''),
+    displayOrder: integer('display_order').notNull().default(0),
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex('idx_review_projects_name').on(
+      sql`${table.name} COLLATE NOCASE`,
+    ),
+    uniqueIndex('idx_review_projects_slug').on(table.slug),
+    index('idx_review_projects_directory').on(
+      table.enabled,
+      table.displayOrder,
+      table.id,
+    ),
+  ],
+);
+
 export const reviewLogs = sqliteTable(
   'review_logs',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
+    projectId: integer('project_id')
+      .notNull()
+      .default(1)
+      .references(() => reviewProjects.id, { onDelete: 'cascade' }),
     logDate: text('log_date').notNull(),
     sourceKey: text('source_key').notNull(),
     sourceName: text('source_name').notNull(),
@@ -33,7 +62,11 @@ export const reviewLogs = sqliteTable(
     archivedAt: text('archived_at'),
   },
   (table) => [
-    uniqueIndex('idx_review_logs_source_key').on(table.sourceKey),
+    uniqueIndex('idx_review_logs_project_source_key').on(
+      table.projectId,
+      table.sourceKey,
+    ),
+    index('idx_review_logs_project_id').on(table.projectId),
     index('idx_review_logs_log_date').on(table.logDate),
     index('idx_review_logs_severity').on(table.p1Count, table.p2Count),
     index('idx_review_logs_archive_date_id').on(

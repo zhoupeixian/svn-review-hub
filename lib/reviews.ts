@@ -115,6 +115,8 @@ export type ReviewExportRow = {
 };
 
 const EXPORT_MAX_ROWS = 1000;
+const DEFAULT_REVIEW_PROJECT_ID = 1;
+const DEFAULT_REVIEW_PROJECT_SLUG = 'zherp';
 
 export type ReviewIngestionResult = ReviewSummary & {
   ingestion: {
@@ -157,6 +159,109 @@ function getRuntime(): RuntimeEnv {
   return runtime;
 }
 
+function reviewProjectsTableSql(): string {
+  return [
+    'CREATE TABLE IF NOT EXISTS review_projects (',
+    'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    'name TEXT NOT NULL,',
+    'slug TEXT NOT NULL,',
+    "description TEXT NOT NULL DEFAULT '',",
+    'display_order INTEGER NOT NULL DEFAULT 0,',
+    'enabled INTEGER NOT NULL DEFAULT 1,',
+    'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,',
+    'updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
+    ')',
+  ].join(' ');
+}
+
+function reviewLogsTableSql(tableName: string, ifNotExists = false): string {
+  return [
+    `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${tableName} (`,
+    'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    `project_id INTEGER NOT NULL DEFAULT ${DEFAULT_REVIEW_PROJECT_ID},`,
+    'log_date TEXT NOT NULL,',
+    'source_key TEXT NOT NULL,',
+    'source_name TEXT NOT NULL,',
+    'source_hash TEXT NOT NULL,',
+    'content_object_key TEXT NOT NULL,',
+    'title TEXT NOT NULL,',
+    'overview TEXT NOT NULL,',
+    'scope_text TEXT NOT NULL,',
+    'revision_count INTEGER NOT NULL DEFAULT 0,',
+    'reviewed_count INTEGER NOT NULL DEFAULT 0,',
+    'skipped_count INTEGER NOT NULL DEFAULT 0,',
+    'p1_count INTEGER NOT NULL DEFAULT 0,',
+    'p2_count INTEGER NOT NULL DEFAULT 0,',
+    'p3_count INTEGER NOT NULL DEFAULT 0,',
+    'sync_mode TEXT NOT NULL,',
+    'imported_by TEXT NOT NULL,',
+    'imported_at TEXT NOT NULL,',
+    'updated_at TEXT NOT NULL,',
+    'archived_at TEXT,',
+    'FOREIGN KEY(project_id) REFERENCES review_projects(id) ON DELETE CASCADE',
+    ')',
+  ].join(' ');
+}
+
+function reviewRevisionsTableSql(
+  tableName: string,
+  ifNotExists = false,
+): string {
+  return [
+    `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${tableName} (`,
+    'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    'review_id INTEGER NOT NULL,',
+    'revision INTEGER NOT NULL,',
+    'author TEXT NOT NULL,',
+    'committed_at TEXT NOT NULL,',
+    'description TEXT NOT NULL,',
+    'conclusion TEXT NOT NULL,',
+    'UNIQUE(review_id, revision),',
+    'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
+    ')',
+  ].join(' ');
+}
+
+function reviewIssuesTableSql(
+  tableName: string,
+  ifNotExists = false,
+): string {
+  return [
+    `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${tableName} (`,
+    'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    'review_id INTEGER NOT NULL,',
+    'issue_key TEXT,',
+    'severity TEXT NOT NULL,',
+    'title TEXT NOT NULL,',
+    'related_revisions TEXT NOT NULL,',
+    'detail TEXT NOT NULL,',
+    `status TEXT NOT NULL DEFAULT '${ISSUE_STATUSES[0]}',`,
+    'status_note TEXT,',
+    'status_updated_at TEXT,',
+    'source_current INTEGER NOT NULL DEFAULT 1,',
+    'version INTEGER NOT NULL DEFAULT 0,',
+    'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
+    ')',
+  ].join(' ');
+}
+
+function reviewIssueEventsTableSql(
+  tableName: string,
+  ifNotExists = false,
+): string {
+  return [
+    `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${tableName} (`,
+    'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+    'issue_id INTEGER NOT NULL,',
+    'from_status TEXT,',
+    'to_status TEXT NOT NULL,',
+    'note TEXT NOT NULL,',
+    'created_at TEXT NOT NULL,',
+    'FOREIGN KEY(issue_id) REFERENCES review_issues(id) ON DELETE CASCADE',
+    ')',
+  ].join(' ');
+}
+
 export async function ensureReviewSchema(): Promise<void> {
   const { DB } = getRuntime();
   const cached = schemaReady.get(DB);
@@ -164,60 +269,10 @@ export async function ensureReviewSchema(): Promise<void> {
 
   const ready = (async () => {
     const baseStatements = [
-      [
-        'CREATE TABLE IF NOT EXISTS review_logs (',
-        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
-        'log_date TEXT NOT NULL,',
-        'source_key TEXT NOT NULL UNIQUE,',
-        'source_name TEXT NOT NULL,',
-        'source_hash TEXT NOT NULL,',
-        'content_object_key TEXT NOT NULL,',
-        'title TEXT NOT NULL,',
-        'overview TEXT NOT NULL,',
-        'scope_text TEXT NOT NULL,',
-        'revision_count INTEGER NOT NULL DEFAULT 0,',
-        'reviewed_count INTEGER NOT NULL DEFAULT 0,',
-        'skipped_count INTEGER NOT NULL DEFAULT 0,',
-        'p1_count INTEGER NOT NULL DEFAULT 0,',
-        'p2_count INTEGER NOT NULL DEFAULT 0,',
-        'p3_count INTEGER NOT NULL DEFAULT 0,',
-        'sync_mode TEXT NOT NULL,',
-        'imported_by TEXT NOT NULL,',
-        'imported_at TEXT NOT NULL,',
-        'updated_at TEXT NOT NULL,',
-        'archived_at TEXT',
-        ')',
-      ].join(' '),
-      [
-        'CREATE TABLE IF NOT EXISTS review_revisions (',
-        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
-        'review_id INTEGER NOT NULL,',
-        'revision INTEGER NOT NULL,',
-        'author TEXT NOT NULL,',
-        'committed_at TEXT NOT NULL,',
-        'description TEXT NOT NULL,',
-        'conclusion TEXT NOT NULL,',
-        'UNIQUE(review_id, revision),',
-        'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
-        ')',
-      ].join(' '),
-      [
-        'CREATE TABLE IF NOT EXISTS review_issues (',
-        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
-        'review_id INTEGER NOT NULL,',
-        'issue_key TEXT,',
-        'severity TEXT NOT NULL,',
-        'title TEXT NOT NULL,',
-        'related_revisions TEXT NOT NULL,',
-        'detail TEXT NOT NULL,',
-        `status TEXT NOT NULL DEFAULT '${ISSUE_STATUSES[0]}',`,
-        'status_note TEXT,',
-        'status_updated_at TEXT,',
-        'source_current INTEGER NOT NULL DEFAULT 1,',
-        'version INTEGER NOT NULL DEFAULT 0,',
-        'FOREIGN KEY(review_id) REFERENCES review_logs(id) ON DELETE CASCADE',
-        ')',
-      ].join(' '),
+      reviewProjectsTableSql(),
+      reviewLogsTableSql('review_logs', true),
+      reviewRevisionsTableSql('review_revisions', true),
+      reviewIssuesTableSql('review_issues', true),
       [
         'CREATE TABLE IF NOT EXISTS admin_users (',
         'user_id TEXT PRIMARY KEY,',
@@ -230,6 +285,14 @@ export async function ensureReviewSchema(): Promise<void> {
 
     await DB.batch(baseStatements.map((statement) => DB.prepare(statement)));
 
+    await DB.prepare(
+      `INSERT OR IGNORE INTO review_projects
+         (id, name, slug, description, display_order, enabled)
+       VALUES (?, 'ZHERP', ?, '', 0, 1)`,
+    )
+      .bind(DEFAULT_REVIEW_PROJECT_ID, DEFAULT_REVIEW_PROJECT_SLUG)
+      .run();
+
     const [logColumns, issueColumns] = await Promise.all([
       DB.prepare('PRAGMA table_info(review_logs)').all<SchemaColumn>(),
       DB.prepare('PRAGMA table_info(review_issues)').all<SchemaColumn>(),
@@ -240,6 +303,7 @@ export async function ensureReviewSchema(): Promise<void> {
     const issueColumnNames = new Set(
       (issueColumns.results ?? []).map((column) => column.name),
     );
+    const needsProjectMigration = !logColumnNames.has('project_id');
     const upgrades: string[] = [];
     if (!logColumnNames.has('archived_at')) {
       upgrades.push('ALTER TABLE review_logs ADD COLUMN archived_at TEXT');
@@ -283,18 +347,8 @@ export async function ensureReviewSchema(): Promise<void> {
     ]);
     await backfillIssueKeys(DB);
 
-    const lifecycleStatements = [
-      [
-        'CREATE TABLE IF NOT EXISTS review_issue_events (',
-        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
-        'issue_id INTEGER NOT NULL,',
-        'from_status TEXT,',
-        'to_status TEXT NOT NULL,',
-        'note TEXT NOT NULL,',
-        'created_at TEXT NOT NULL,',
-        'FOREIGN KEY(issue_id) REFERENCES review_issues(id) ON DELETE CASCADE',
-        ')',
-      ].join(' '),
+    const lifecycleTableStatements = [
+      reviewIssueEventsTableSql('review_issue_events', true),
       [
         'CREATE TABLE IF NOT EXISTS anonymous_update_limits (',
         'client_hash TEXT PRIMARY KEY,',
@@ -315,6 +369,22 @@ export async function ensureReviewSchema(): Promise<void> {
         'FOREIGN KEY(admin_user_id) REFERENCES admin_users(user_id) ON DELETE CASCADE',
         ')',
       ].join(' '),
+    ];
+
+    await DB.batch(
+      lifecycleTableStatements.map((statement) => DB.prepare(statement)),
+    );
+    if (needsProjectMigration) {
+      await rebuildReviewStorageWithProject(DB);
+    }
+
+    const integrityStatements = [
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_projects_name ON review_projects(name COLLATE NOCASE)',
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_projects_slug ON review_projects(slug)',
+      'CREATE INDEX IF NOT EXISTS idx_review_projects_directory ON review_projects(enabled, display_order, id)',
+      'DROP INDEX IF EXISTS idx_review_logs_source_key',
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_logs_project_source_key ON review_logs(project_id, source_key)',
+      'CREATE INDEX IF NOT EXISTS idx_review_logs_project_id ON review_logs(project_id)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_log_date ON review_logs(log_date)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_severity ON review_logs(p1_count, p2_count)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_archive_date_id ON review_logs(archived_at, log_date, id)',
@@ -352,7 +422,7 @@ export async function ensureReviewSchema(): Promise<void> {
     ];
 
     await DB.batch(
-      lifecycleStatements.map((statement) => DB.prepare(statement)),
+      integrityStatements.map((statement) => DB.prepare(statement)),
     );
     await ensureReviewSearch(DB);
     await DB.prepare('PRAGMA optimize').run();
@@ -365,6 +435,76 @@ export async function ensureReviewSchema(): Promise<void> {
     schemaReady.delete(DB);
     throw error;
   }
+}
+
+async function rebuildReviewStorageWithProject(DB: D1Database): Promise<void> {
+  const revisionBackup = '__review_revisions_before_project';
+  const issueBackup = '__review_issues_before_project';
+  const eventBackup = '__review_issue_events_before_project';
+  const replacementLogs = '__review_logs_with_project';
+  await DB.batch([
+    DB.prepare(`DROP TABLE IF EXISTS ${revisionBackup}`),
+    DB.prepare(`DROP TABLE IF EXISTS ${issueBackup}`),
+    DB.prepare(`DROP TABLE IF EXISTS ${eventBackup}`),
+    DB.prepare(`DROP TABLE IF EXISTS ${replacementLogs}`),
+    DB.prepare(
+      `CREATE TABLE ${revisionBackup} AS SELECT * FROM review_revisions`,
+    ),
+    DB.prepare(`CREATE TABLE ${issueBackup} AS SELECT * FROM review_issues`),
+    DB.prepare(
+      `CREATE TABLE ${eventBackup} AS SELECT * FROM review_issue_events`,
+    ),
+    DB.prepare('DROP TABLE review_issue_events'),
+    DB.prepare('DROP TABLE review_issues'),
+    DB.prepare('DROP TABLE review_revisions'),
+    DB.prepare(reviewLogsTableSql(replacementLogs)),
+    DB.prepare(
+      `INSERT INTO ${replacementLogs} (
+         id, project_id, log_date, source_key, source_name, source_hash,
+         content_object_key, title, overview, scope_text, revision_count,
+         reviewed_count, skipped_count, p1_count, p2_count, p3_count,
+         sync_mode, imported_by, imported_at, updated_at, archived_at
+       )
+       SELECT id, ?, log_date, source_key, source_name, source_hash,
+              content_object_key, title, overview, scope_text, revision_count,
+              reviewed_count, skipped_count, p1_count, p2_count, p3_count,
+              sync_mode, imported_by, imported_at, updated_at, archived_at
+       FROM review_logs`,
+    ).bind(DEFAULT_REVIEW_PROJECT_ID),
+    DB.prepare('DROP TABLE review_logs'),
+    DB.prepare(`ALTER TABLE ${replacementLogs} RENAME TO review_logs`),
+    DB.prepare(reviewRevisionsTableSql('review_revisions')),
+    DB.prepare(
+      `INSERT INTO review_revisions (
+         id, review_id, revision, author, committed_at, description, conclusion
+       )
+       SELECT id, review_id, revision, author, committed_at, description,
+              conclusion
+       FROM ${revisionBackup}`,
+    ),
+    DB.prepare(reviewIssuesTableSql('review_issues')),
+    DB.prepare(
+      `INSERT INTO review_issues (
+         id, review_id, issue_key, severity, title, related_revisions, detail,
+         status, status_note, status_updated_at, source_current, version
+       )
+       SELECT id, review_id, issue_key, severity, title, related_revisions,
+              detail, status, status_note, status_updated_at, source_current,
+              version
+       FROM ${issueBackup}`,
+    ),
+    DB.prepare(reviewIssueEventsTableSql('review_issue_events')),
+    DB.prepare(
+      `INSERT INTO review_issue_events (
+         id, issue_id, from_status, to_status, note, created_at
+       )
+       SELECT id, issue_id, from_status, to_status, note, created_at
+       FROM ${eventBackup}`,
+    ),
+    DB.prepare(`DROP TABLE ${revisionBackup}`),
+    DB.prepare(`DROP TABLE ${issueBackup}`),
+    DB.prepare(`DROP TABLE ${eventBackup}`),
+  ]);
 }
 
 async function backfillIssueKeys(DB: D1Database): Promise<void> {
@@ -1191,6 +1331,12 @@ export async function ingestReview(
   const contentObjectKey =
     'review-logs/' + parsed.logDate + '/' + sourceHash + '.md';
   const { DB, FILES } = getRuntime();
+  const defaultProject = await first<{ id: number }>(
+    'SELECT id FROM review_projects WHERE slug = ?',
+    [DEFAULT_REVIEW_PROJECT_SLUG],
+  );
+  if (!defaultProject) throw new Error('默认 ZHERP 审查项目不存在。');
+  const projectId = defaultProject.id;
 
   await FILES.put(contentObjectKey, markdown, {
     httpMetadata: {
@@ -1203,8 +1349,8 @@ export async function ingestReview(
   });
 
   const existing = await first<{ id: number }>(
-    'SELECT id FROM review_logs WHERE source_key = ?',
-    [sourceKey],
+    'SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?',
+    [projectId, sourceKey],
   );
   const existingIssues = existing
     ? await all<IssueIdentityRow>(
@@ -1248,11 +1394,11 @@ export async function ingestReview(
     DB.prepare(
       [
         'INSERT INTO review_logs (',
-        'log_date, source_key, source_name, source_hash, content_object_key,',
+        'project_id, log_date, source_key, source_name, source_hash, content_object_key,',
         'title, overview, scope_text, revision_count, reviewed_count, skipped_count,',
         'p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at, updated_at',
-        ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        'ON CONFLICT(source_key) DO UPDATE SET',
+        ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'ON CONFLICT(project_id, source_key) DO UPDATE SET',
         'log_date = excluded.log_date, source_name = excluded.source_name,',
         'source_hash = excluded.source_hash, content_object_key = excluded.content_object_key,',
         'title = excluded.title, overview = excluded.overview,',
@@ -1263,6 +1409,7 @@ export async function ingestReview(
         'imported_by = excluded.imported_by, updated_at = excluded.updated_at',
       ].join(' '),
     ).bind(
+      projectId,
       parsed.logDate,
       sourceKey,
       sourceName,
@@ -1283,17 +1430,17 @@ export async function ingestReview(
       now,
     ),
     DB.prepare(
-      'DELETE FROM review_revisions WHERE review_id = (SELECT id FROM review_logs WHERE source_key = ?)',
-    ).bind(sourceKey),
+      'DELETE FROM review_revisions WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)',
+    ).bind(projectId, sourceKey),
     DB.prepare(
-      'UPDATE review_issues SET source_current = 0 WHERE review_id = (SELECT id FROM review_logs WHERE source_key = ?)',
-    ).bind(sourceKey),
+      'UPDATE review_issues SET source_current = 0 WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)',
+    ).bind(projectId, sourceKey),
     ...parsed.revisions.map((revision) =>
       DB.prepare(
         [
           'INSERT INTO review_revisions (',
           'review_id, revision, author, committed_at, description, conclusion',
-          ') SELECT id, ?, ?, ?, ?, ? FROM review_logs WHERE source_key = ?',
+          ') SELECT id, ?, ?, ?, ?, ? FROM review_logs WHERE project_id = ? AND source_key = ?',
         ].join(' '),
       ).bind(
         revision.revision,
@@ -1301,6 +1448,7 @@ export async function ingestReview(
         revision.committedAt,
         revision.description,
         revision.conclusion,
+        projectId,
         sourceKey,
       ),
     ),
@@ -1311,7 +1459,7 @@ export async function ingestReview(
           'review_id, issue_key, severity, title, related_revisions, detail,',
           'status, status_note, status_updated_at, source_current, version',
           ") SELECT id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
-          'FROM review_logs WHERE source_key = ?',
+          'FROM review_logs WHERE project_id = ? AND source_key = ?',
           'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
           'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
           'related_revisions = excluded.related_revisions, detail = excluded.detail,',
@@ -1323,6 +1471,7 @@ export async function ingestReview(
         issue.title,
         issue.relatedRevisions,
         issue.detail,
+        projectId,
         sourceKey,
       ),
     ),
@@ -1339,8 +1488,8 @@ export async function ingestReview(
   }
 
   const identity = await first<{ id: number }>(
-    'SELECT id FROM review_logs WHERE source_key = ?',
-    [sourceKey],
+    'SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?',
+    [projectId, sourceKey],
   );
   if (!identity) throw new Error('日志已写入，但未能读取导入标识。');
   const reviewId = identity.id;
