@@ -38,7 +38,7 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
     lineValue(lines, '日期：').match(/\d{4}-\d{2}-\d{2}/)?.[0] ??
     '';
   const scopeText =
-    lineValue(lines, '审查范围：') ||
+    firstParagraphFromLabel(lines, '审查范围：') ||
     firstParagraphAfterHeading(lines, '审查范围与执行边界');
   const overview = lineValue(lines, '总体结论：');
 
@@ -62,8 +62,27 @@ function firstParagraphAfterHeading(lines: string[], heading: string): string {
   );
   if (headingIndex < 0) return '';
 
-  const paragraph: string[] = [];
-  for (const line of lines.slice(headingIndex + 1)) {
+  return collectParagraph(lines, headingIndex + 1);
+}
+
+function firstParagraphFromLabel(lines: string[], label: string): string {
+  const labelIndex = lines.findIndex((line) => line.startsWith(label));
+  if (labelIndex < 0) return '';
+
+  const firstLine = lines[labelIndex].slice(label.length).trim();
+  return collectParagraph(
+    lines,
+    labelIndex + 1,
+    firstLine ? [firstLine] : [],
+  );
+}
+
+function collectParagraph(
+  lines: string[],
+  startIndex: number,
+  paragraph: string[] = [],
+): string {
+  for (const line of lines.slice(startIndex)) {
     const trimmed = line.trim();
     if (!trimmed) {
       if (paragraph.length) break;
@@ -168,10 +187,30 @@ function tableCells(line: string): string[] {
   const trimmed = line.trim();
   if (!trimmed.includes('|')) return [];
 
-  const cells = trimmed.split('|');
+  const cells: string[] = [];
+  let cell = '';
+  for (const character of trimmed) {
+    if (character !== '|') {
+      cell += character;
+      continue;
+    }
+
+    let backslashCount = 0;
+    for (let index = cell.length - 1; cell[index] === '\\'; index -= 1) {
+      backslashCount += 1;
+    }
+    if (backslashCount % 2 === 1) {
+      cell = `${cell.slice(0, -1)}|`;
+      continue;
+    }
+
+    cells.push(cell.trim());
+    cell = '';
+  }
+  cells.push(cell.trim());
   if (cells[0] === '') cells.shift();
   if (cells.at(-1) === '') cells.pop();
-  return cells.map((cell) => cell.trim());
+  return cells;
 }
 
 function parseIssues(markdown: string): ParsedIssue[] {
@@ -204,7 +243,7 @@ function parseIssues(markdown: string): ParsedIssue[] {
       const detail = detailLines.join('\n').trim();
       const explicitRevisions = normalizeRelatedRevisions(
         detail.match(
-          /相关\s+revision[：:]\s*((?:`?r?\d+`?)(?:(?:\s*[、，,/]\s*|\s+)`?r?\d+`?)*)/i,
+          /相关[ \t]+revision[：:][ \t]*((?:`?r?\d+`?)(?:(?:[ \t]*[、，,/][ \t]*|[ \t]+)`?r?\d+`?)*)/i,
         )?.[1] ?? '',
       );
       const titleRevisions = normalizeTitleRevisions(titleLine);

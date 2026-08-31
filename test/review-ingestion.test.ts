@@ -186,6 +186,24 @@ describe('审查日志合并导入', () => {
     });
   });
 
+  it('读取带标签审查范围中完整的换行段落', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：审查窗口为 2026-08-29 19:00:00 至 2026-08-30 18:59:59，',
+      '共发现 5 个 revision，其中 3 个可审查，2 个按规则跳过。',
+      '',
+      '本段说明不属于审查范围摘要。',
+    ].join('\n'));
+
+    expect(parsed).toMatchObject({
+      scopeText: '审查窗口为 2026-08-29 19:00:00 至 2026-08-30 18:59:59， 共发现 5 个 revision，其中 3 个可审查，2 个按规则跳过。',
+      revisionCount: 5,
+      reviewedCount: 3,
+      skippedCount: 2,
+    });
+  });
+
   it('关联 Revision 不吸收后续说明中的编号', () => {
     const parsed = parseReviewMarkdown([
       '# 上传日志',
@@ -197,6 +215,21 @@ describe('审查日志合并导入', () => {
 
     expect(parsed.issues[0]).toMatchObject({
       relatedRevisions: '53613、53618',
+    });
+  });
+
+  it('空格分隔的关联 Revision 不跨行吸收说明编号', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 2 个 revision，实际审查 2 个，跳过 0 个',
+      '### P1：示例问题',
+      '相关 revision：53825 53826',
+      '552 是下一行的说明编号。',
+    ].join('\n'));
+
+    expect(parsed.issues[0]).toMatchObject({
+      relatedRevisions: '53825、53826',
     });
   });
 
@@ -234,6 +267,25 @@ describe('审查日志合并导入', () => {
       author: 'zhoupx',
       committedAt: '',
       description: '补交 Java 类',
+      conclusion: '已审查',
+    }]);
+  });
+
+  it('解析 Revision 表单元格中的转义竖线', () => {
+    const parsed = parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 1 个 revision，实际审查 1 个，跳过 0 个',
+      '| Revision | 作者 | 提交说明 | 结果 |',
+      '| --- | --- | --- | --- |',
+      String.raw`| r53841 | zhoupx | 修复 A \| B | 已审查 |`,
+    ].join('\n'));
+
+    expect(parsed.revisions).toEqual([{
+      revision: 53841,
+      author: 'zhoupx',
+      committedAt: '',
+      description: '修复 A | B',
       conclusion: '已审查',
     }]);
   });
