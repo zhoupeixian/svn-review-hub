@@ -25,6 +25,7 @@ export type ParsedReview = {
   p1Count: number;
   p2Count: number;
   p3Count: number;
+  revisionTableMode: 'reviewed-only' | 'complete' | 'missing';
   revisions: ParsedRevision[];
   issues: ParsedIssue[];
 };
@@ -41,17 +42,23 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
     firstParagraphFromLabel(lines, '审查范围：') ||
     firstParagraphAfterHeading(lines, '审查范围与执行边界');
   const overview = lineValue(lines, '总体结论：');
+  const revisionTable = parseRevisionTable(lines);
+  const scopeCounts = reconcileReviewCounts(
+    parseReviewScopeCounts(scopeText),
+    revisionTable,
+  );
 
   return {
     logDate,
     title,
     overview,
     scopeText,
-    ...parseReviewScopeCounts(scopeText),
+    ...scopeCounts,
     p1Count: countSeverity(markdown, 'P1'),
     p2Count: countSeverity(markdown, 'P2'),
     p3Count: countSeverity(markdown, 'P3'),
-    revisions: parseRevisionTable(lines),
+    revisionTableMode: scopeCounts.revisionTableMode,
+    revisions: revisionTable.revisions,
     issues: parseIssues(markdown),
   };
 }
@@ -89,9 +96,22 @@ function collectParagraph(
       continue;
     }
     if (trimmed.startsWith('#')) break;
+    if (paragraph.length && isTopLevelMetadataLine(trimmed)) break;
     paragraph.push(trimmed);
   }
   return paragraph.join(' ');
+}
+
+const topLevelMetadataLabels = [
+  '日期：',
+  '审查范围：',
+  '运行批次：',
+  '工作副本：',
+  '总体结论：',
+];
+
+function isTopLevelMetadataLine(line: string): boolean {
+  return topLevelMetadataLabels.some((label) => line.startsWith(label));
 }
 
 function lineValue(lines: string[], label: string): string {
@@ -127,6 +147,7 @@ function reviewScopeClauses(scopeText: string): string[] {
 }
 
 export function reviewScopeDeclaresZeroRevisions(scopeText: string): boolean {
+  if (/无新增\s*(?:revision|提交)/i.test(scopeText)) return true;
   return countFromClauses(
     reviewScopeClauses(scopeText),
     revisionCountPatterns,
@@ -135,16 +156,23 @@ export function reviewScopeDeclaresZeroRevisions(scopeText: string): boolean {
 
 export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> {
   const clauses = reviewScopeClauses(scopeText);
-  const revisionCount = countFromClauses(clauses, revisionCountPatterns) ?? 0;
+  const parsedRevisionCount = countFromClauses(clauses, revisionCountPatterns);
   const parsedReviewedCount = countFromClauses(clauses, [
     /实际\s*审查\s*(\d+)\s*个/i,
     /(\d+)\s*个\s*(?:均\s*)?可\s*审查(?:\s*revision)?/i,
-    /(\d+)\s*个\s*进入\s*(?:代码\s*)?审查/i,
+    /reviewable\s*(?:为\s*)?(\d+)\s*个/i,
+    /(?:共\s*)?(\d+)\s*个\s*(?:待\s*审查|需要\s*审查的?)\s*revision/i,
+    /(\d+)\s*个\s*(?:revision\s*)?进入\s*(?:代码\s*)?审查/i,
   ]);
   const parsedSkippedCount = countFromClauses(clauses, [
     /跳过\s*(\d+)\s*个/i,
-    /(\d+)\s*个\s*(?:按\s*(?:默认\s*)?规则\s*跳过|命中\s*(?:默认\s*)?跳过\s*规则|跳过)/i,
+    /(\d+)\s*个\s*(?:(?:revision|提交)\s*)?(?:按\s*(?:默认\s*)?规则\s*跳过|命中\s*(?:默认\s*)?跳过\s*规则|跳过)/i,
   ]);
+  const revisionCount =
+    parsedRevisionCount ??
+    (parsedReviewedCount !== null && parsedSkippedCount !== null
+      ? parsedReviewedCount + parsedSkippedCount
+      : 0);
 
   return {
     revisionCount,
@@ -161,6 +189,51 @@ export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'r
   };
 }
 
+function reconcileReviewCounts(
+  counts: Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'>,
+  table: ParsedRevisionTable,
+): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount' | 'revisionTableMode'> {
+  const rowCount = table.revisions.length;
+  if (rowCount > 0 && counts.revisionCount > 0 && rowCount === counts.revisionCount) {
+    if (counts.reviewedCount === 0 && counts.skippedCount === 0) {
+      const skippedCount = table.revisions.filter((revision) =>
+        /跳过/.test(revision.conclusion),
+      ).length;
+      return {
+        ...counts,
+        reviewedCount: counts.revisionCount - skippedCount,
+        skippedCount,
+        revisionTableMode: 'complete',
+      };
+    }
+    return { ...counts, revisionTableMode: 'complete' };
+  }
+  if (rowCount > 0 && counts.reviewedCount > 0 && rowCount === counts.reviewedCount) {
+    return { ...counts, revisionTableMode: 'reviewed-only' };
+  }
+  if (table.mode !== 'reviewed-only' || rowCount === 0) {
+    return { ...counts, revisionTableMode: table.mode };
+  }
+
+  if (counts.revisionCount === 0) {
+    return {
+      revisionCount: rowCount,
+      reviewedCount: rowCount,
+      skippedCount: 0,
+      revisionTableMode: 'reviewed-only',
+    };
+  }
+  if (counts.reviewedCount === 0 && counts.skippedCount === 0) {
+    return {
+      ...counts,
+      reviewedCount: rowCount,
+      skippedCount: Math.max(0, counts.revisionCount - rowCount),
+      revisionTableMode: 'reviewed-only',
+    };
+  }
+  return { ...counts, revisionTableMode: table.mode };
+}
+
 function countSeverity(markdown: string, severity: 'P1' | 'P2' | 'P3'): number {
   const pattern = new RegExp(
     '(?:保留\\s*)?(\\d+)\\s*个\\s*' + severity,
@@ -169,8 +242,14 @@ function countSeverity(markdown: string, severity: 'P1' | 'P2' | 'P3'): number {
   return Number(markdown.match(pattern)?.[1] ?? 0);
 }
 
-function parseRevisionTable(lines: string[]): ParsedRevision[] {
+type ParsedRevisionTable = {
+  mode: ParsedReview['revisionTableMode'];
+  revisions: ParsedRevision[];
+};
+
+function parseRevisionTable(lines: string[]): ParsedRevisionTable {
   const revisions: ParsedRevision[] = [];
+  let mode: ParsedRevisionTable['mode'] = 'missing';
 
   for (let index = 0; index < lines.length; index += 1) {
     const headers = tableCells(lines[index]);
@@ -178,10 +257,11 @@ function parseRevisionTable(lines: string[]): ParsedRevision[] {
     if (revisionIndex < 0) continue;
 
     const authorIndex = headers.findIndex((cell) => /^(?:提交人|作者)$/.test(cell));
-    const committedAtIndex = headers.findIndex((cell) => cell === '提交时间');
+    const committedAtIndex = headers.findIndex((cell) => /^提交时间(?:\s*\([^)]*\))?$/.test(cell));
     const descriptionIndex = headers.findIndex((cell) => /^(?:提交说明|说明)$/.test(cell));
     const conclusionIndex = headers.findIndex((cell) => /^(?:审查结论|结论|结果)$/.test(cell));
     if (authorIndex < 0 || descriptionIndex < 0 || conclusionIndex < 0) continue;
+    mode = committedAtIndex >= 0 ? 'reviewed-only' : 'complete';
 
     for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
       const cells = tableCells(lines[rowIndex]);
@@ -207,7 +287,7 @@ function parseRevisionTable(lines: string[]): ParsedRevision[] {
     }
   }
 
-  return revisions;
+  return { mode, revisions };
 }
 
 function tableCells(line: string): string[] {

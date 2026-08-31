@@ -489,6 +489,21 @@ describe('审查日志合并导入', () => {
     expect(await revisionRows()).toEqual([]);
   });
 
+  it('允许历史日志使用“无新增提交”明确声明零提交', async () => {
+    const markdown = zeroRevisionMarkdown().replace(
+      '共 0 个 revision',
+      '本时间窗内无新增提交',
+    );
+    const result = await ingestReview(ingestInput(markdown));
+
+    expect(result).toMatchObject({
+      revisionCount: 0,
+      reviewedCount: 0,
+      skippedCount: 0,
+    });
+    expect(await revisionRows()).toEqual([]);
+  });
+
   it('重复导入同一问题时保留状态、说明、版本和事件，并更新源字段', async () => {
     await ingestReview(ingestInput(initialMarkdown()));
     const firstPass = await issueRows();
