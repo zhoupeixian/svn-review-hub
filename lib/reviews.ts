@@ -159,21 +159,6 @@ function getRuntime(): RuntimeEnv {
   return runtime;
 }
 
-function reviewProjectsTableSql(): string {
-  return [
-    'CREATE TABLE IF NOT EXISTS review_projects (',
-    'id INTEGER PRIMARY KEY AUTOINCREMENT,',
-    'name TEXT NOT NULL,',
-    'slug TEXT NOT NULL,',
-    "description TEXT NOT NULL DEFAULT '',",
-    'display_order INTEGER NOT NULL DEFAULT 0,',
-    'enabled INTEGER NOT NULL DEFAULT 1,',
-    'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,',
-    'updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
-    ')',
-  ].join(' ');
-}
-
 function reviewLogsTableSql(tableName: string, ifNotExists = false): string {
   return [
     `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${tableName} (`,
@@ -269,7 +254,18 @@ export async function ensureReviewSchema(): Promise<void> {
 
   const ready = (async () => {
     const baseStatements = [
-      reviewProjectsTableSql(),
+      [
+        'CREATE TABLE IF NOT EXISTS review_projects (',
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+        'name TEXT NOT NULL,',
+        'slug TEXT NOT NULL,',
+        "description TEXT NOT NULL DEFAULT '',",
+        'display_order INTEGER NOT NULL DEFAULT 0,',
+        'enabled INTEGER NOT NULL DEFAULT 1,',
+        'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,',
+        'updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
+        ')',
+      ].join(' '),
       reviewLogsTableSql('review_logs', true),
       reviewRevisionsTableSql('review_revisions', true),
       reviewIssuesTableSql('review_issues', true),
