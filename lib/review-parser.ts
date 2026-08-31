@@ -10,7 +10,7 @@ export type ParsedIssue = {
   severity: 'P1' | 'P2' | 'P3';
   title: string;
   relatedRevisions: string;
-  relatedRevisionSource?: 'explicit' | 'title';
+  legacyRelatedRevisions?: string;
   detail: string;
 };
 
@@ -273,6 +273,9 @@ function parseIssues(markdown: string): ParsedIssue[] {
           /相关[ \t]+revision[：:][ \t]*((?:`?r?\d+`?)(?:(?:[ \t]*[、，,/][ \t]*|[ \t]+)`?r?\d+`?)*)/i,
         )?.[1] ?? '',
       );
+      const legacyExplicitRevisions = normalizeRelatedRevisions(
+        detail.match(/相关 revision：\s*([0-9、，,\s]+)/i)?.[1] ?? '',
+      );
       const titleRevisions = normalizeTitleRevisions(titleLine);
       const revisions = explicitRevisions || titleRevisions;
 
@@ -281,10 +284,10 @@ function parseIssues(markdown: string): ParsedIssue[] {
           severity,
           title: titleLine.trim(),
           relatedRevisions: revisions,
-          relatedRevisionSource: explicitRevisions
-            ? 'explicit'
+          legacyRelatedRevisions: explicitRevisions
+            ? legacyExplicitRevisions
             : titleRevisions
-              ? 'title'
+              ? ''
               : undefined,
           detail,
         });

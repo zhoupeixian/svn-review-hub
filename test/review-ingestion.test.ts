@@ -624,6 +624,59 @@ describe('审查日志合并导入', () => {
     ]);
   });
 
+  it.each([
+    ['r 前缀', 'r53825', '', '53825', 'p2:explicit-related-revisions:'],
+    ['斜杠分隔', '53825/53826', '53825', '53825、53826', 'p2:explicit-related-revisions:53825'],
+  ])(
+    '显式相关 Revision 使用%s时兼容旧问题标识并保留协作状态',
+    async (_caseName, sourceRevisions, legacyRevisions, parsedRevisions, legacyKey) => {
+      const markdown = explicitRevisionMarkdown(sourceRevisions);
+      await ingestReview(ingestInput(markdown));
+      const original = (await issueRows())[0];
+
+      await DB.batch([
+        DB.prepare(
+          `UPDATE review_issues
+           SET issue_key = ?, related_revisions = ?, status = 'resolved',
+               status_note = '旧问题协作状态', version = 3
+           WHERE id = ?`,
+        ).bind(legacyKey, legacyRevisions, original.id),
+        DB.prepare(
+          `INSERT INTO review_issue_events (
+            issue_id, from_status, to_status, note, created_at
+          ) VALUES (?, 'open', 'resolved', '旧问题协作状态',
+                    '2026-08-27T10:00:00.000Z')`,
+        ).bind(original.id),
+      ]);
+
+      const result = await ingestReview(ingestInput(markdown));
+      const issues = await issueRows();
+      const events = await DB.prepare(
+        'SELECT COUNT(*) AS count FROM review_issue_events WHERE issue_id = ?',
+      )
+        .bind(original.id)
+        .first<{ count: number }>();
+
+      expect(result.ingestion).toEqual({
+        createdIssueCount: 0,
+        updatedIssueCount: 1,
+        parsedIssueCount: 1,
+      });
+      expect(issues).toEqual([
+        expect.objectContaining({
+          id: original.id,
+          issueKey: legacyKey,
+          relatedRevisions: parsedRevisions,
+          status: 'resolved',
+          statusNote: '旧问题协作状态',
+          sourceCurrent: 1,
+          version: 3,
+        }),
+      ]);
+      expect(events?.count).toBe(1);
+    },
+  );
+
   it('源问题增删及重新出现时保留历史行，只让当前问题进入总览', async () => {
     await ingestReview(ingestInput(initialMarkdown()));
     const firstPass = await issueRows();
@@ -1154,5 +1207,23 @@ function whitespaceSeparatedRevisionMarkdown(): string {
 #### Whitespace Related Revisions
 
 相关 revision：53825 53826（对应 BUG #552）
+`;
+}
+
+function explicitRevisionMarkdown(relatedRevisions: string): string {
+  return `# 显式 Revision 审查日志
+日期：2026-08-27
+审查范围：共 2 个 revision，实际审查 2 个，跳过 0 个
+
+| Revision | 作者 | 提交说明 | 结果 |
+| --- | --- | --- | --- |
+| 53825 | zhoupx | 第一条提交 | 已审查 |
+| 53826 | zhoupx | 第二条提交 | 已审查 |
+
+### P2
+
+#### Explicit Related Revisions
+
+相关 revision：${relatedRevisions}
 `;
 }
