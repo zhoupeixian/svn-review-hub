@@ -6,6 +6,7 @@ import {
   normalizeRelatedRevisions,
   parseReviewMarkdown,
   parseReviewScopeCounts,
+  reviewScopeDeclaresZeroRevisions,
 } from '@/lib/review-parser';
 import {
   ISSUE_STATUS_LABELS,
@@ -1367,9 +1368,7 @@ export async function ingestReview(
 }
 
 function validateParsedReview(parsed: ReturnType<typeof parseReviewMarkdown>): void {
-  const explicitlyZero = /共(?:发现)?\s*0\s*个\s*(?:revision|提交)/i.test(
-    parsed.scopeText,
-  );
+  const explicitlyZero = reviewScopeDeclaresZeroRevisions(parsed.scopeText);
   if (parsed.revisionCount === 0) {
     if (
       explicitlyZero &&

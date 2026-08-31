@@ -71,6 +71,119 @@ describe('审查日志合并导入', () => {
     });
   });
 
+  it.each([
+    ['个后空格', '共 5 个 revision，其中 3 个 可审查', 3, 2],
+    ['均可审查空格', '共 5 个 revision，其中 3 个 均 可审查', 3, 2],
+    ['进入审查空格', '共 5 个 revision，其中 3 个 进入审查', 3, 2],
+    ['进入代码审查空格', '共 5 个 revision，其中 3 个 进入 代码审查', 3, 2],
+    ['中文逗号', '共 5 个 revision，其中 3 个可审查，2 个按规则跳过', 3, 2],
+    ['ASCII 逗号', '共 5 个 revision, 其中 3 个可审查, 2 个按规则跳过', 3, 2],
+    ['中文分号', '共 5 个 revision；其中 3 个可审查；2 个按规则跳过', 3, 2],
+    ['ASCII 分号', '共 5 个 revision; 其中 3 个可审查; 2 个按规则跳过', 3, 2],
+    ['中文句号', '共 5 个 revision。其中 3 个可审查。2 个按规则跳过', 3, 2],
+    ['顿号', '共 5 个 revision，其中 3 个可审查、2 个按规则跳过', 3, 2],
+    ['明确跳过', '共 5 个 revision，其中 3 个可审查，跳过 2 个', 3, 2],
+    ['默认规则跳过', '共 5 个 revision，其中 3 个可审查，2 个按默认规则跳过', 3, 2],
+    ['命中跳过规则', '共 5 个 revision，其中 3 个可审查，2 个命中默认跳过规则', 3, 2],
+  ])('稳定解析审查范围计数：%s', (_name, scope, reviewedCount, skippedCount) => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      `审查范围：${scope}`,
+    ].join('\n'))).toMatchObject({
+      revisionCount: 5,
+      reviewedCount,
+      skippedCount,
+    });
+  });
+
+  it('交叉验证所有支持的计数措辞和分隔符', () => {
+    const totalPhrases = [
+      '共 5 个 revision',
+      '共发现 5 个 revision',
+      '共 5 个提交',
+    ];
+    const reviewedPhrases = [
+      '实际审查 3 个',
+      '3 个可审查',
+      '3 个 均 可审查',
+      '3 个 进入审查',
+      '3 个 进入 代码审查',
+    ];
+    const skippedPhrases = [
+      '跳过 2 个',
+      '2 个跳过',
+      '2 个按规则跳过',
+      '2 个按 默认 规则 跳过',
+      '2 个命中跳过规则',
+      '2 个命中 默认 跳过 规则',
+    ];
+    const separators = ['，', ',', '；', ';', '。', '、'];
+
+    for (const total of totalPhrases) {
+      for (const reviewed of reviewedPhrases) {
+        for (const skipped of skippedPhrases) {
+          for (const separator of separators) {
+            const scope = `${total}${separator}其中 ${reviewed}${separator}${skipped}`;
+            expect(
+              parseReviewMarkdown([
+                '# 上传日志',
+                '日期：2026-08-30',
+                `审查范围：${scope}`,
+              ].join('\n')),
+              scope,
+            ).toMatchObject({
+              revisionCount: 5,
+              reviewedCount: 3,
+              skippedCount: 2,
+            });
+          }
+        }
+      }
+    }
+  });
+
+  it('审查范围换行后仍按同一语义解析计数', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共 5 个 revision，其中 3 个',
+      '可审查、2 个按规则跳过',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 5,
+      reviewedCount: 3,
+      skippedCount: 2,
+    });
+  });
+
+  it('审查范围在语义词之间换行时仍能解析计数', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共',
+      '发现 5 个 revision，其中 3 个',
+      '可',
+      '审查、2 个按',
+      '规则跳过',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 5,
+      reviewedCount: 3,
+      skippedCount: 2,
+    });
+  });
+
+  it('Revision 列表和说明编号不干扰审查范围计数', () => {
+    expect(parseReviewMarkdown([
+      '# 上传日志',
+      '日期：2026-08-30',
+      '审查范围：共发现 5 个 revision：r53833、r53834、r53835、r53839、r53840。其中 3 个可审查、2 个按规则跳过，对应 BUG #552。',
+    ].join('\n'))).toMatchObject({
+      revisionCount: 5,
+      reviewedCount: 3,
+      skippedCount: 2,
+    });
+  });
+
   it('兼容以提交表述总数的旧日志', () => {
     expect(parseReviewMarkdown([
       '# 上传日志',
@@ -340,6 +453,21 @@ describe('审查日志合并导入', () => {
 
   it('允许明确声明零提交的日志', async () => {
     const result = await ingestReview(ingestInput(zeroRevisionMarkdown()));
+
+    expect(result).toMatchObject({
+      revisionCount: 0,
+      reviewedCount: 0,
+      skippedCount: 0,
+    });
+    expect(await revisionRows()).toEqual([]);
+  });
+
+  it('允许审查范围换行后明确声明零提交', async () => {
+    const markdown = zeroRevisionMarkdown().replace(
+      '共 0 个 revision',
+      '共\n发现 0 个 revision',
+    );
+    const result = await ingestReview(ingestInput(markdown));
 
     expect(result).toMatchObject({
       revisionCount: 0,

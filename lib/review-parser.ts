@@ -104,20 +104,47 @@ function countFrom(value: string, pattern: RegExp): number | null {
   return Number(match.slice(1).find((group) => group !== undefined) ?? 0);
 }
 
+function countFromClauses(clauses: string[], patterns: RegExp[]): number | null {
+  for (const pattern of patterns) {
+    for (const clause of clauses) {
+      const count = countFrom(clause, pattern);
+      if (count !== null) return count;
+    }
+  }
+  return null;
+}
+
+const revisionCountPatterns = [
+  /共\s*(?:发现\s*)?(\d+)\s*个\s*(?:revision|提交)/i,
+];
+
+function reviewScopeClauses(scopeText: string): string[] {
+  return scopeText
+    .replace(/\s+/g, ' ')
+    .split(/[，,；;。、]+/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+export function reviewScopeDeclaresZeroRevisions(scopeText: string): boolean {
+  return countFromClauses(
+    reviewScopeClauses(scopeText),
+    revisionCountPatterns,
+  ) === 0;
+}
+
 export function parseReviewScopeCounts(scopeText: string): Pick<ParsedReview, 'revisionCount' | 'reviewedCount' | 'skippedCount'> {
-  const revisionCount =
-    countFrom(
-      scopeText,
-      /共(?:发现)?\s*(\d+)\s*个\s*(?:revision|提交)/i,
-    ) ?? 0;
-  const parsedReviewedCount =
-    countFrom(scopeText, /实际审查\s*(\d+)\s*个/i) ??
-    countFrom(scopeText, /(\d+)\s*个(?:均)?可审查/i) ??
-    countFrom(scopeText, /(\d+)\s*个进入(?:代码)?审查/i);
-  const parsedSkippedCount = countFrom(
-    scopeText,
-    /跳过\s*(\d+)\s*个|(\d+)\s*个[^，,；;。]*跳过/i,
-  );
+  const clauses = reviewScopeClauses(scopeText);
+  const revisionCount = countFromClauses(clauses, revisionCountPatterns) ?? 0;
+  const parsedReviewedCount = countFromClauses(clauses, [
+    /实际\s*审查\s*(\d+)\s*个/i,
+    /(\d+)\s*个\s*(?:均\s*)?可\s*审查(?:\s*revision)?/i,
+    /(\d+)\s*个\s*进入\s*(?:代码\s*)?审查/i,
+  ]);
+  const parsedSkippedCount = countFromClauses(clauses, [
+    /跳过\s*(\d+)\s*个/i,
+    /(\d+)\s*个\s*(?:按\s*(?:默认\s*)?规则\s*跳过|命中\s*(?:默认\s*)?跳过\s*规则|跳过)/i,
+  ]);
 
   return {
     revisionCount,
