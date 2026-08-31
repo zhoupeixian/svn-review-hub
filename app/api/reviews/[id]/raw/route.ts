@@ -1,4 +1,4 @@
-import { getReviewMarkdown } from '@/lib/reviews';
+import { getEnabledReviewProject, getReviewMarkdown } from '@/lib/reviews';
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -6,7 +6,8 @@ type Props = {
 
 export async function GET(_: Request, { params }: Props) {
   const { id } = await params;
-  const review = await getReviewMarkdown(Number(id));
+  const project = await getEnabledReviewProject('zherp');
+  const review = project ? await getReviewMarkdown(project.id, Number(id)) : null;
   if (!review) {
     return new Response('未找到审查日志。', { status: 404 });
   }

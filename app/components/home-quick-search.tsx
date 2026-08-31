@@ -1,6 +1,10 @@
-export default function HomeQuickSearch() {
+type Props = {
+  action?: string;
+};
+
+export default function HomeQuickSearch({ action = '/issues' }: Props) {
   return (
-    <form action="/issues" method="get" role="search" className="home-quick-search">
+    <form action={action} method="get" role="search" className="home-quick-search">
       <div>
         <p className="text-sm font-black text-[#243e31]">快速查找问题</p>
         <p className="mt-1 text-xs text-[#718077]">按关键词、Revision 或日志日期直接进入问题看板。</p>

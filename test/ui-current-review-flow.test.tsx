@@ -7,6 +7,8 @@ import IssueExplorer from '../app/issues/issue-explorer';
 import IssueStatusPanel from '../app/components/issue-status-panel';
 import ThemeSwitcher from '../app/components/theme-switcher';
 import HomeQuickSearch from '../app/components/home-quick-search';
+import ProjectDirectory from '../app/components/project-directory';
+import ProjectSwitcher from '../app/components/project-switcher';
 
 const review = {
   id: 1, logDate: '2026-08-27', title: '当前日志', overview: '摘要', scopeText: '',
@@ -33,6 +35,74 @@ describe('当前审查协作 UI', () => {
     await userEvent.click(screen.getByRole('button', { name: '加载更多日志' }));
     expect(await screen.findByText('2026-08-26')).toBeTruthy();
     expect(fetch).toHaveBeenCalledWith('/api/reviews?scope=active&cursor=next');
+  });
+
+  it('项目目录展示项目状态和统计，并从项目卡进入独立首页', () => {
+    render(<ProjectDirectory projects={[
+      {
+        id: 2, name: '海华项目', slug: 'haihua', description: '海华专项审查', displayOrder: 10,
+        latestReviewDate: '2026-08-31', openIssueCount: 3, highRiskCount: 1,
+        latestAutomationSyncAt: '2026-08-31T10:00:00.000Z', syncStatus: 'healthy',
+      },
+      {
+        id: 1, name: 'ZHERP', slug: 'zherp', description: '', displayOrder: 20,
+        latestReviewDate: null, openIssueCount: 0, highRiskCount: 0,
+        latestAutomationSyncAt: null, syncStatus: 'waiting',
+      },
+    ]} />);
+
+    expect(screen.getByRole('link', { name: /海华项目/ }).getAttribute('href')).toBe('/projects/haihua');
+    expect(screen.getByText('最近审查：2026-08-31')).toBeTruthy();
+    expect(screen.getByText('待处理问题 3')).toBeTruthy();
+    expect(screen.getByText('P1/P2 风险 1')).toBeTruthy();
+    expect(screen.getByText('同步正常')).toBeTruthy();
+    expect(screen.getAllByText('等待首次同步')).toHaveLength(2);
+  });
+
+  it('项目切换和项目内日志链接始终进入目标项目且不继承筛选状态', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [{ ...review, id: 2, logDate: '2026-08-26' }], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<>
+      <ProjectSwitcher
+        currentSlug="haihua"
+        projects={[{ name: '海华项目', slug: 'haihua' }, { name: 'ZHERP', slug: 'zherp' }]}
+      />
+      <HomeQuickSearch action="/projects/haihua/issues" />
+      <ReviewExplorer
+        initialItems={[review]}
+        initialCursor="next"
+        initialHasMore
+        projectBasePath="/projects/haihua"
+        reviewsApiPath="/api/projects/haihua/reviews"
+      />
+    </>);
+
+    expect(screen.getByRole('link', { name: '切换到 ZHERP' }).getAttribute('href')).toBe('/projects/zherp');
+    expect(screen.getByRole('search').getAttribute('action')).toBe('/projects/haihua/issues');
+    expect(screen.getByRole('link', { name: '打开审查日志 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/1');
+    await userEvent.click(screen.getByRole('button', { name: '加载更多日志' }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/haihua/reviews?scope=active&cursor=next');
+  });
+
+  it('项目问题看板只使用当前项目的页面和查询接口', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [issue], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<IssueExplorer
+      initialItems={[issue]}
+      initialCursor={null}
+      initialHasMore={false}
+      projectBasePath="/projects/haihua"
+      issuesApiPath="/api/projects/haihua/issues"
+      issuesExportPath={null}
+    />);
+
+    expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/1#issue-42');
+    expect(screen.queryByRole('link', { name: '导出 Excel 跟进表' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/issues?');
+    expect(window.location.pathname).toBe('/projects/haihua/issues');
   });
 
   it('问题卡片带数据库锚点和当前筛选操作', () => {

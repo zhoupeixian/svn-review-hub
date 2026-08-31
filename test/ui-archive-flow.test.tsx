@@ -72,6 +72,25 @@ describe('归档库与归档管理 UI', () => {
     expect(requestUrl).toContain('cursor=next+page');
   });
 
+  it('项目归档库只使用当前项目路径，并在未项目化导出前隐藏导出入口', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      items: [], nextCursor: null, hasMore: false,
+    }), { status: 200 }));
+    render(<ArchiveExplorer
+      initialItems={[archivedReview]}
+      initialCursor="next"
+      initialHasMore
+      projectBasePath="/projects/haihua"
+      reviewsApiPath="/api/projects/haihua/reviews"
+      reviewsExportPath={null}
+    />);
+
+    expect(screen.getByRole('link', { name: '查看归档原文与历史 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/9');
+    expect(screen.queryByRole('link', { name: '导出归档清单' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/reviews?');
+  });
+
   it('归档筛选控件变更后刷新首屏并沿用日期、级别、状态、Revision、提交人和关键词', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     fetchMock

@@ -5,9 +5,23 @@ import PagedLoadMore from '../components/paged-load-more';
 import type { PageResult, ReviewIssueSummary } from '../../lib/reviews';
 import { ISSUE_STATUS_LABELS, ISSUE_STATUSES } from '../../lib/issue-lifecycle';
 
-type Props = { initialItems: ReviewIssueSummary[]; initialCursor: string | null; initialHasMore: boolean };
+type Props = {
+  initialItems: ReviewIssueSummary[];
+  initialCursor: string | null;
+  initialHasMore: boolean;
+  projectBasePath?: string;
+  issuesApiPath?: string;
+  issuesExportPath?: string | null;
+};
 
-export default function IssueExplorer({ initialItems, initialCursor, initialHasMore }: Props) {
+export default function IssueExplorer({
+  initialItems,
+  initialCursor,
+  initialHasMore,
+  projectBasePath = '',
+  issuesApiPath = '/api/issues',
+  issuesExportPath = '/api/issues/export',
+}: Props) {
   const initialParams = () => new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search);
   const [items, setItems] = useState(initialItems);
   const [cursor, setCursor] = useState(initialCursor);
@@ -51,10 +65,11 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
   async function applyFilters(next = new URLSearchParams(draft)) {
     const request = ++requestId.current;
     setParams(next); setDraft(new URLSearchParams(next));
-    window.history.replaceState({}, '', next.size ? `/issues?${next}` : '/issues');
+    const issuesPath = `${projectBasePath}/issues`;
+    window.history.replaceState({}, '', next.size ? `${issuesPath}?${next}` : issuesPath);
     setItems([]); setCursor(null); setHasMore(false); setError(''); setLoading(true);
     try {
-      const response = await fetch(`/api/issues?${queryFor(next)}`);
+      const response = await fetch(`${issuesApiPath}?${queryFor(next)}`);
       if (!response.ok) throw new Error();
       const page = await response.json() as PageResult<ReviewIssueSummary>;
       if (request !== requestId.current) return;
@@ -68,7 +83,7 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
     const request = ++requestId.current;
     setLoading(true);
     try {
-      const response = await fetch(`/api/issues?${queryFor(params, cursor)}`);
+      const response = await fetch(`${issuesApiPath}?${queryFor(params, cursor)}`);
       if (!response.ok) throw new Error();
       const page = await response.json() as PageResult<ReviewIssueSummary>;
       if (request !== requestId.current) return;
@@ -77,7 +92,7 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
     finally { if (request === requestId.current) setLoading(false); }
   }
 
-  const share = typeof window === 'undefined' ? '' : `${window.location.origin}/issues${params.size ? `?${params}` : ''}`;
+  const share = typeof window === 'undefined' ? '' : `${window.location.origin}${projectBasePath}/issues${params.size ? `?${params}` : ''}`;
   const exportParams = new URLSearchParams('scope=active');
   for (const [key, value] of params) {
     const target = key === 'q' ? 'keyword' : key === 'from' ? 'fromDate' : key === 'to' ? 'toDate' : key;
@@ -97,8 +112,8 @@ export default function IssueExplorer({ initialItems, initialCursor, initialHasM
       {advanced && <div className="mt-3 grid gap-3 md:grid-cols-4"><label>作者<input aria-label="按作者筛选" value={draft.get('author') ?? ''} onChange={(event) => updateDraft('author', event.target.value)} /></label><label>开始日期<input type="date" aria-label="开始日期" value={draft.get('from') ?? ''} onChange={(event) => updateDraft('from', event.target.value)} /></label><label>结束日期<input type="date" aria-label="结束日期" value={draft.get('to') ?? ''} onChange={(event) => updateDraft('to', event.target.value)} /></label><label>Revision<input inputMode="numeric" aria-label="按 Revision 筛选" value={draft.get('revision') ?? ''} onChange={(event) => updateDraft('revision', event.target.value)} /></label></div>}
       <div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" className="filter-apply" onClick={() => applyFilters()}>应用筛选</button><button type="button" className="filter-quiet" onClick={() => applyFilters(new URLSearchParams())}>重置</button><span className="text-xs text-[#718077]">当前已显示 {items.length} 条，导出最多包含 1,000 条问题。</span></div>
     </div>
-    <div className="share-actions mt-3"><div><p className="text-sm font-bold text-[#243e31]">分享当前筛选</p><p className="mt-1 text-xs text-[#718077]">复制链接后可发送给团队成员，导出将沿用同一筛选范围。</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={copyShareLink} className="filter-quiet">{copied ? '已复制' : '复制当前筛选链接'}</button><a href={`/api/issues/export?${exportParams}`} className="filter-apply">导出 Excel 跟进表</a></div></div>
-    <div className="mt-5 grid gap-3">{items.map((issue) => <article id={`issue-${issue.id}`} key={issue.id} className="issue-card"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap gap-2"><span className="meta-chip" data-severity={issue.severity}>{issue.severity}</span><span className="meta-chip" data-status={issue.status}>{ISSUE_STATUS_LABELS[issue.status]}</span></div><strong className="mt-3 block text-base text-[#223c30]">{issue.title}</strong>{issue.statusNote && <p className="mt-2 line-clamp-2 text-sm text-[#52655a]">处理说明：{issue.statusNote}</p>}</div><span className="meta-chip">r{issue.relatedRevisions.split('、').join(' · r')}</span></div><div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#edf1ed] pt-3 text-xs text-[#718077]"><span>{issue.logDate} · {issue.reviewTitle} · {issue.authors || '提交人待补充'}</span><a className="font-bold text-[#1d5b46]" href={`/reviews/${issue.reviewId}#issue-${issue.id}`}>打开原日志 →</a></div></article>)}</div>
+    <div className="share-actions mt-3"><div><p className="text-sm font-bold text-[#243e31]">分享当前筛选</p><p className="mt-1 text-xs text-[#718077]">复制链接后可发送给团队成员，导出将沿用同一筛选范围。</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={copyShareLink} className="filter-quiet">{copied ? '已复制' : '复制当前筛选链接'}</button>{issuesExportPath && <a href={`${issuesExportPath}?${exportParams}`} className="filter-apply">导出 Excel 跟进表</a>}</div></div>
+    <div className="mt-5 grid gap-3">{items.map((issue) => <article id={`issue-${issue.id}`} key={issue.id} className="issue-card"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap gap-2"><span className="meta-chip" data-severity={issue.severity}>{issue.severity}</span><span className="meta-chip" data-status={issue.status}>{ISSUE_STATUS_LABELS[issue.status]}</span></div><strong className="mt-3 block text-base text-[#223c30]">{issue.title}</strong>{issue.statusNote && <p className="mt-2 line-clamp-2 text-sm text-[#52655a]">处理说明：{issue.statusNote}</p>}</div><span className="meta-chip">r{issue.relatedRevisions.split('、').join(' · r')}</span></div><div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#edf1ed] pt-3 text-xs text-[#718077]"><span>{issue.logDate} · {issue.reviewTitle} · {issue.authors || '提交人待补充'}</span><a className="font-bold text-[#1d5b46]" href={`${projectBasePath}/reviews/${issue.reviewId}#issue-${issue.id}`}>打开原日志 →</a></div></article>)}</div>
     {!items.length && !loading && <p className="mt-5 text-sm text-[#718077]">没有匹配的问题。</p>}{error && <p role="alert" className="mt-4 text-sm font-semibold text-[#a44138]">{error}</p>}<PagedLoadMore hasMore={hasMore} loading={loading} label="加载更多问题" onLoad={loadMore} />
   </section>;
 }

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
-import { parseReviewFilters } from '@/app/api/reviews/route';
+import { parseReviewFilters } from '@/lib/review-filters';
 import { allowAdministrator, ensureReviewSchema, getReviewPage } from '@/lib/reviews';
 
 type RuntimeEnv = { DB: D1Database };
@@ -37,7 +37,7 @@ async function idsFromBody(body: ArchiveBody): Promise<number[]> {
   const ids: number[] = [];
   let cursor: string | undefined;
   do {
-    const page = await getReviewPage({ ...filters, scope: 'active', cursor });
+    const page = await getReviewPage(1, { ...filters, scope: 'active', cursor });
     ids.push(...page.items.map((item) => item.id));
     cursor = page.nextCursor ?? undefined;
   } while (cursor);

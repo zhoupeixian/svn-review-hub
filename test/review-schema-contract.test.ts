@@ -428,13 +428,13 @@ describe.sequential('审查生命周期 D1 schema', () => {
       ),
     ).toBe('# 活动日志\n历史原文');
 
-    expect((await firstUpgrade.getReviewPage()).items.map((item) => item.id)).toEqual([1]);
+    expect((await firstUpgrade.getReviewPage(1)).items.map((item) => item.id)).toEqual([1]);
     expect(
-      (await firstUpgrade.getReviewPage({ scope: 'archived' })).items.map(
+      (await firstUpgrade.getReviewPage(1, { scope: 'archived' })).items.map(
         (item) => item.id,
       ),
     ).toEqual([2]);
-    expect((await firstUpgrade.getIssuePage()).items.map((item) => item.id)).toEqual([10]);
+    expect((await firstUpgrade.getIssuePage(1)).items.map((item) => item.id)).toEqual([10]);
 
     vi.resetModules();
     const secondUpgrade = await import('../lib/reviews');
