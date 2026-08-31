@@ -42,10 +42,8 @@ export default async function Home() {
             <p className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-[#37735a]">
               每日自动沉淀 · 团队可随时查阅
             </p>
-            <h1 className="max-w-3xl text-4xl font-black tracking-[-0.04em] text-[#18352b] sm:text-5xl">
-              把每天的 SVN 审查，
-              <br className="hidden sm:block" />
-              变成团队可用的工程记忆。
+            <h1 className="max-w-3xl text-3xl font-black tracking-[-0.04em] text-[#18352b] sm:text-5xl">
+              ZHERP SVN 审查中心
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-[#5d6e64]">
               汇总当日提交、风险问题、验证证据与待确认事项。开发人员可按日期、Revision、提交人和风险级别快速回溯。

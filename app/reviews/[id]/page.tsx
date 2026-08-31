@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getReviewDetail } from '@/lib/reviews';
 import IssueStatusPanel from '@/app/components/issue-status-panel';
+import ReviewMarkdownLink, { reviewMarkdownUrlTransform } from '@/app/components/review-markdown-link';
+import { relativizeProjectPaths } from '@/lib/project-paths';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,7 +100,7 @@ export default async function ReviewPage({ params }: Props) {
                 >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                      <p className={'inline-flex rounded-lg border px-2.5 py-1 text-xs font-bold ' + issueTone(issue.severity)}>
+                      <p className="risk-chip" data-severity={issue.severity}>
                         {issue.severity}
                       </p>
                       <h3 className="mt-3 text-base font-bold text-[#223c30]">{issue.title}</h3>
@@ -110,7 +112,7 @@ export default async function ReviewPage({ params }: Props) {
                     )}
                   </div>
                   <p className="mt-4 max-w-4xl whitespace-pre-line text-sm leading-7 text-[#607167]">
-                    {issue.detail}
+                    {relativizeProjectPaths(issue.detail)}
                   </p>
                   <IssueStatusPanel issue={issue} readOnly={review.archivedAt !== null} />
                 </article>
@@ -133,7 +135,11 @@ export default async function ReviewPage({ params }: Props) {
             </a>
           </div>
           <article className="review-markdown mt-7">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{ a: ReviewMarkdownLink }}
+              urlTransform={reviewMarkdownUrlTransform}
+            >
               {review.markdown || '原始日志对象暂不可用。'}
             </ReactMarkdown>
           </article>
@@ -154,14 +160,8 @@ function Metric({ label, value }: { label: string; value: number | string }) {
 
 function RiskBadge({ level, count }: { level: string; count: number }) {
   return (
-    <span className={'rounded-lg border px-2.5 py-1.5 text-xs font-bold ' + issueTone(level)}>
+    <span className="risk-chip" data-severity={level}>
       {level} {count}
     </span>
   );
-}
-
-function issueTone(level: string): string {
-  if (level === 'P1') return 'border-[#f3c1bc] bg-[#fff3f1] text-[#b84339]';
-  if (level === 'P2') return 'border-[#f1d8a4] bg-[#fff9eb] text-[#996119]';
-  return 'border-[#c8d8e8] bg-[#f1f6fb] text-[#44729e]';
 }

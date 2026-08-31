@@ -6,6 +6,7 @@ import {
   normalizeRelatedRevisions,
   parseReviewMarkdown,
   parseReviewScopeCounts,
+  reviewScopeDeclaresZeroRevisions,
 } from '@/lib/review-parser';
 import {
   ISSUE_STATUS_LABELS,
@@ -1179,6 +1180,7 @@ export async function ingestReview(
   if (!parsed.logDate) {
     throw new Error('未识别到“日期：YYYY-MM-DD”字段，不能作为审查日志导入。');
   }
+  validateParsedReview(parsed);
 
   const sourceKey = input.sourceKey.trim().slice(0, 500);
   if (!sourceKey) throw new Error('日志来源标识不能为空。');
@@ -1222,7 +1224,19 @@ export async function ingestReview(
   const issuesByKey = new Map<string, ParsedIssue>();
   for (const issue of parsed.issues) {
     const identity = issueStableKey(issue);
-    issuesByKey.set(existingKeyByIdentity.get(identity) ?? identity, issue);
+    const legacyIdentity =
+      issue.legacyRelatedRevisions !== undefined
+        ? issueStableKey({
+            ...issue,
+            relatedRevisions: issue.legacyRelatedRevisions,
+          })
+        : '';
+    issuesByKey.set(
+      existingKeyByIdentity.get(identity) ??
+        existingKeyByIdentity.get(legacyIdentity) ??
+        identity,
+      issue,
+    );
   }
   const currentIssues = [...issuesByKey.entries()];
   const createdIssueCount = currentIssues.filter(
@@ -1354,6 +1368,37 @@ export async function ingestReview(
       parsedIssueCount: currentIssues.length,
     },
   };
+}
+
+function validateParsedReview(parsed: ReturnType<typeof parseReviewMarkdown>): void {
+  const explicitlyZero = reviewScopeDeclaresZeroRevisions(
+    `${parsed.scopeText}\n${parsed.overview}`,
+  );
+  if (parsed.revisionCount === 0) {
+    if (
+      explicitlyZero &&
+      parsed.reviewedCount === 0 &&
+      parsed.skippedCount === 0 &&
+      parsed.revisions.length === 0
+    ) {
+      return;
+    }
+    throw new Error('未识别到明确的审查提交总数。');
+  }
+  if (parsed.reviewedCount + parsed.skippedCount !== parsed.revisionCount) {
+    throw new Error(
+      `审查范围计数不一致：共 ${parsed.revisionCount} 个，审查 ${parsed.reviewedCount} 个，跳过 ${parsed.skippedCount} 个。`,
+    );
+  }
+  const expectedRevisionRows =
+    parsed.revisionTableMode === 'reviewed-only'
+      ? parsed.reviewedCount
+      : parsed.revisionCount;
+  if (parsed.revisions.length !== expectedRevisionRows) {
+    throw new Error(
+      `提交表解析不完整：应解析 ${expectedRevisionRows} 个，实际解析 ${parsed.revisions.length} 个。`,
+    );
+  }
 }
 
 function normalizeReviewCounts<T extends Pick<ReviewSummary, 'scopeText' | 'revisionCount' | 'reviewedCount' | 'skippedCount'>>(review: T): T {

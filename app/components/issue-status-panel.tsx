@@ -47,13 +47,13 @@ export default function IssueStatusPanel({ issue, readOnly = false }: { issue: E
   return (
     <section className="status-panel mt-5" aria-label="问题协作状态">
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        <strong className="meta-chip">当前状态：{ISSUE_STATUS_LABELS[current.status]}</strong>
+        <strong className="meta-chip" data-status={current.status}>当前状态：{ISSUE_STATUS_LABELS[current.status]}</strong>
         {current.statusUpdatedAt && <time className="text-[#718077]">更新于 {formatTime(current.statusUpdatedAt)}</time>}
       </div>
       {current.statusNote && <p className="mt-2 text-sm text-[#586b60]">处理说明：{current.statusNote}</p>}
       {!readOnly && <form onSubmit={submit} className="mt-4 grid gap-3 sm:grid-cols-[180px_1fr_auto] sm:items-end">
         <label className="grid gap-1.5 text-sm font-semibold text-[#40594c]">状态
-          <select value={status} onChange={(event) => setStatus(event.target.value as IssueStatus)} className="rounded-lg border border-[#c8d7ca] bg-white px-3 py-2.5 font-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46]">
+          <select value={status} data-status={status} onChange={(event) => setStatus(event.target.value as IssueStatus)} className="rounded-lg border border-[#c8d7ca] bg-white px-3 py-2.5 font-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d5b46]">
             {ISSUE_STATUSES.map((value) => <option key={value} value={value}>{ISSUE_STATUS_LABELS[value]}</option>)}
           </select>
         </label>
