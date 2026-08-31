@@ -1371,7 +1371,9 @@ export async function ingestReview(
 }
 
 function validateParsedReview(parsed: ReturnType<typeof parseReviewMarkdown>): void {
-  const explicitlyZero = reviewScopeDeclaresZeroRevisions(parsed.scopeText);
+  const explicitlyZero = reviewScopeDeclaresZeroRevisions(
+    `${parsed.scopeText}\n${parsed.overview}`,
+  );
   if (parsed.revisionCount === 0) {
     if (
       explicitlyZero &&

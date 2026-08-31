@@ -505,6 +505,22 @@ describe('审查日志合并导入', () => {
     expect(await revisionRows()).toEqual([]);
   });
 
+  it('允许 review 3 仅在总体结论中声明无新增提交', async () => {
+    const markdown = `# ZHERP 当日 SVN 提交审查日志
+日期：2026-06-07
+审查范围：2026-06-06 19:00:00 到 2026-06-07 18:59:59
+总体结论：本时间窗内无新增提交，无需进入代码审查。
+`;
+    const result = await ingestReview(ingestInput(markdown));
+
+    expect(result).toMatchObject({
+      revisionCount: 0,
+      reviewedCount: 0,
+      skippedCount: 0,
+    });
+    expect(await revisionRows()).toEqual([]);
+  });
+
   it('重复导入同一问题时保留状态、说明、版本和事件，并更新源字段', async () => {
     await ingestReview(ingestInput(initialMarkdown()));
     const firstPass = await issueRows();
