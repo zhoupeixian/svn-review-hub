@@ -9,18 +9,18 @@ type Props = {
   initialItems: ReviewIssueSummary[];
   initialCursor: string | null;
   initialHasMore: boolean;
-  projectBasePath?: string;
-  issuesApiPath?: string;
-  issuesExportPath?: string | null;
+  projectBasePath: string;
+  issuesApiPath: string;
+  issuesExportPath: string | null;
 };
 
 export default function IssueExplorer({
   initialItems,
   initialCursor,
   initialHasMore,
-  projectBasePath = '',
-  issuesApiPath = '/api/issues',
-  issuesExportPath = '/api/issues/export',
+  projectBasePath,
+  issuesApiPath,
+  issuesExportPath,
 }: Props) {
   const initialParams = () => new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search);
   const [items, setItems] = useState(initialItems);

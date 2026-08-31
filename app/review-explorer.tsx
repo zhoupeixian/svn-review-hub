@@ -8,16 +8,16 @@ type Props = {
   initialItems: ReviewSummary[];
   initialCursor: string | null;
   initialHasMore: boolean;
-  projectBasePath?: string;
-  reviewsApiPath?: string;
+  projectBasePath: string;
+  reviewsApiPath: string;
 };
 
 export default function ReviewExplorer({
   initialItems,
   initialCursor,
   initialHasMore,
-  projectBasePath = '',
-  reviewsApiPath = '/api/reviews',
+  projectBasePath,
+  reviewsApiPath,
 }: Props) {
   const [items, setItems] = useState(initialItems);
   const [cursor, setCursor] = useState(initialCursor);

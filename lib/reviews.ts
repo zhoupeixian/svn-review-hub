@@ -694,7 +694,7 @@ export async function getReviewProjectDirectory(): Promise<
        MAX(l.log_date) AS latestReviewDate,
        COUNT(DISTINCT CASE
          WHEN l.archived_at IS NULL AND i.source_current = 1
-          AND i.status IN ('open', 'pending_review') THEN i.id END
+          AND i.status = 'open' THEN i.id END
        ) AS openIssueCount,
        COUNT(DISTINCT CASE
          WHEN l.archived_at IS NULL AND i.source_current = 1

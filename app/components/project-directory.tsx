@@ -6,9 +6,9 @@ type Props = {
 
 const SYNC_STATUS_LABELS: Record<ReviewProjectDirectoryItem['syncStatus'], string> = {
   waiting: '等待首次同步',
-  manual_only: '尚无自动同步',
-  healthy: '同步正常',
-  attention: '同步结果待检查',
+  manual_only: '尚无自动接收记录',
+  healthy: '最近接收正常',
+  attention: '最近接收结果待检查',
 };
 
 export default function ProjectDirectory({ projects }: Props) {

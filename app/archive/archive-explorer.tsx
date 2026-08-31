@@ -20,9 +20,9 @@ type Props = {
   initialCursor: string | null;
   initialHasMore: boolean;
   filters?: ArchiveFilters;
-  projectBasePath?: string;
-  reviewsApiPath?: string;
-  reviewsExportPath?: string | null;
+  projectBasePath: string;
+  reviewsApiPath: string;
+  reviewsExportPath: string | null;
 };
 
 export default function ArchiveExplorer({
@@ -30,9 +30,9 @@ export default function ArchiveExplorer({
   initialCursor,
   initialHasMore,
   filters = {},
-  projectBasePath = '',
-  reviewsApiPath = '/api/reviews',
-  reviewsExportPath = '/api/reviews/export',
+  projectBasePath,
+  reviewsApiPath,
+  reviewsExportPath,
 }: Props) {
   const [items, setItems] = useState(initialItems);
   const [cursor, setCursor] = useState(initialCursor);

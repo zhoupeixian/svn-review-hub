@@ -1,8 +1,8 @@
 type Props = {
-  action?: string;
+  action: string;
 };
 
-export default function HomeQuickSearch({ action = '/issues' }: Props) {
+export default function HomeQuickSearch({ action }: Props) {
   return (
     <form action={action} method="get" role="search" className="home-quick-search">
       <div>

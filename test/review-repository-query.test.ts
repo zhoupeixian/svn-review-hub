@@ -102,6 +102,7 @@ describe.sequential('审查日志 Repository 查询', () => {
       { id: 1, reviewId: 1, severity: 'P1', title: 'ZHERP 风险', relatedRevisions: '1' },
       { id: 2, reviewId: 2, severity: 'P2', title: '海华风险', relatedRevisions: '2' },
       { id: 3, reviewId: 2, severity: 'P3', title: '海华普通问题', relatedRevisions: '3' },
+      { id: 4, reviewId: 2, severity: 'P3', title: '海华待确认问题', relatedRevisions: '4', status: 'pending_review' },
     ]);
 
     const projects = await getReviewProjectDirectory();
