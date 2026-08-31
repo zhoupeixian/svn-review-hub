@@ -128,7 +128,7 @@ export default async function ProjectHome({ params }: Props) {
       <section className="mx-auto max-w-7xl px-5 pb-10 sm:px-8">
         <div className="rounded-2xl border border-[#d9e4da] bg-white p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div><p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#708177]">站点接收状态</p><h2 className="mt-2 text-xl font-black text-[#193b2e]">{project.name} 站点接收</h2></div>
+            <div><p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#708177]">站点同步状态</p><h2 className="mt-2 text-xl font-black text-[#193b2e]">{project.name} 站点接收</h2></div>
             <div className="text-right text-sm text-[#5d6e64]"><p>最近成功接收：{health.latestAutomationSyncAt ?? '暂无'}</p><p className="mt-1">最近日志：{health.latestLogDate ?? '暂无'} · 最新 Revision：{health.latestRevision ?? '暂无'}</p></div>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-3"><Stat label="当前问题" value={health.currentIssueCount} /><Stat label="待确认问题" value={health.pendingIssueCount} /><Stat label="当前日志" value={health.reviewCount} /></div>
