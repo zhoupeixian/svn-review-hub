@@ -6,6 +6,7 @@ import {
   ensureReviewSchema,
   getEnabledReviewProject,
   getReviewPage,
+  type ReviewProjectIdentity,
 } from '@/lib/reviews';
 
 type RuntimeEnv = { DB: D1Database };
@@ -90,9 +91,10 @@ async function currentCounts(projectId: number, ids: number[]) {
 
 export async function archiveReviewsForProject(
   request: Request,
-  projectId: number,
+  project: ReviewProjectIdentity,
 ): Promise<Response> {
   try {
+    const projectId = project.id;
     const user = await getChatGPTUser();
     if (!user) return Response.json({ error: '请先使用管理员账号登录。' }, { status: 401 });
     if (!(await allowAdministrator(user))) {
@@ -212,5 +214,5 @@ export async function POST(request: Request) {
   if (!project) {
     return Response.json({ error: '审查项目不存在。' }, { status: 404 });
   }
-  return archiveReviewsForProject(request, project.id);
+  return archiveReviewsForProject(request, project);
 }

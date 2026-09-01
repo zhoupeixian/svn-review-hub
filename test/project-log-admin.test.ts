@@ -150,6 +150,16 @@ describe.sequential('按审查项目管理日志', () => {
     const zherpId = await reviewId('zherp');
     const haihuaId = await reviewId('haihua');
     const haihuaIssueId = await issueId('haihua');
+    await DB.batch([
+      DB.prepare(
+        `UPDATE review_issues SET title = 'ZHERP 不应导出的问题'
+         WHERE review_id = ?`,
+      ).bind(zherpId),
+      DB.prepare(
+        `UPDATE review_issues SET title = '海华应导出的问题'
+         WHERE review_id = ?`,
+      ).bind(haihuaId),
+    ]);
 
     const reviews = await exportProjectReviews(
       new Request('https://review.test/api/projects/haihua/reviews/export'),
@@ -158,8 +168,11 @@ describe.sequential('按审查项目管理日志', () => {
     expect(reviews.status).toBe(200);
     expect(reviews.headers.get('content-disposition')).toContain('haihua');
     const csv = await reviews.text();
+    expect(csv).toContain('海华应导出的问题');
+    expect(csv).not.toContain('ZHERP 不应导出的问题');
     expect(csv).toContain(`/projects/haihua/reviews/${haihuaId}`);
     expect(csv).not.toContain(`/projects/zherp/reviews/${zherpId}`);
+    expect(csv.split('\r\n').filter(Boolean)).toHaveLength(2);
 
     const issues = await exportProjectIssues(
       new Request('https://review.test/api/projects/haihua/issues/export'),
@@ -169,9 +182,14 @@ describe.sequential('按审查项目管理日志', () => {
     expect(issues.headers.get('content-disposition')).toContain('haihua');
     const workbook = XLSX.read(await issues.arrayBuffer(), { type: 'array' });
     const sheet = workbook.Sheets['问题跟进'];
+    expect(XLSX.utils.sheet_to_json(sheet, { header: 1 })).toEqual([
+      ['严重级别', '状态', '问题标题', '关联 Revision', '提交人', '日志日期', '来源日志', '处理说明', '最后更新', '详情链接'],
+      expect.arrayContaining(['P1', '待处理', '海华应导出的问题']),
+    ]);
     expect(sheet.J2.l?.Target).toBe(
       `https://review.test/projects/haihua/reviews/${haihuaId}#issue-${haihuaIssueId}`,
     );
+    expect(sheet.J3).toBeUndefined();
 
     const ownRaw = await downloadProjectReview(
       new Request('https://review.test'),
