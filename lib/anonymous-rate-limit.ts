@@ -13,7 +13,7 @@ function getDb(): D1Database {
   return db;
 }
 
-async function hashClient(value: string): Promise<string> {
+async function hashAnonymousSource(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(value),
@@ -23,7 +23,7 @@ async function hashClient(value: string): Promise<string> {
     .join('');
 }
 
-export type AnonymousUpdateLimit = {
+type AnonymousUpdateResult = {
   allowed: boolean;
   sourceHash: string;
 };
@@ -32,10 +32,10 @@ export type AnonymousUpdateLimit = {
 export async function consumeAnonymousUpdate(
   projectId: number,
   request: Request,
-): Promise<AnonymousUpdateLimit> {
+): Promise<AnonymousUpdateResult> {
   await ensureReviewSchema();
   const db = getDb();
-  const clientHash = await hashClient(
+  const anonymousSourceHash = await hashAnonymousSource(
     `${projectId}:${request.headers.get('CF-Connecting-IP') || ANONYMOUS_BUCKET}`,
   );
   const now = Date.now();
@@ -51,17 +51,17 @@ export async function consumeAnonymousUpdate(
     .prepare(
       'INSERT OR IGNORE INTO anonymous_update_limits (client_hash, window_started_at, request_count) VALUES (?, ?, 0)',
     )
-    .bind(clientHash, nowIso)
+    .bind(anonymousSourceHash, nowIso)
     .run();
   const updated = await db
     .prepare(
       'UPDATE anonymous_update_limits SET request_count = request_count + 1 WHERE client_hash = ? AND request_count < ?',
     )
-    .bind(clientHash, MAX_REQUESTS)
+    .bind(anonymousSourceHash, MAX_REQUESTS)
     .run();
   return {
     allowed: Number(updated.meta.changes ?? 0) === 1,
-    sourceHash: clientHash,
+    sourceHash: anonymousSourceHash,
   };
 }
 

@@ -14,25 +14,6 @@ export async function updateIssueStatusForProject(
     return Response.json({ error: '未找到当前问题。' }, { status: 404 });
   }
 
-  let input: ReturnType<typeof parseIssueUpdateInput>;
-  try {
-    const body = (await request.json()) as unknown;
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      Array.isArray(body) ||
-      Object.keys(body).some((key) => !['status', 'note', 'version'].includes(key))
-    ) {
-      return Response.json({ error: '问题更新参数包含不支持的字段。' }, { status: 400 });
-    }
-    input = parseIssueUpdateInput(body);
-  } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : '问题更新参数无效。' },
-      { status: 400 },
-    );
-  }
-
   try {
     await ensureReviewSchema();
     const db = (env as unknown as RuntimeEnv).DB;
@@ -53,6 +34,25 @@ export async function updateIssueStatusForProject(
       }>();
     if (!current || current.sourceCurrent !== 1 || current.archivedAt !== null) {
       return Response.json({ error: '未找到当前问题。' }, { status: 404 });
+    }
+
+    let input: ReturnType<typeof parseIssueUpdateInput>;
+    try {
+      const body = (await request.json()) as unknown;
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body) ||
+        Object.keys(body).some((key) => !['status', 'note', 'version'].includes(key))
+      ) {
+        return Response.json({ error: '问题更新参数包含不支持的字段。' }, { status: 400 });
+      }
+      input = parseIssueUpdateInput(body);
+    } catch (error) {
+      return Response.json(
+        { error: error instanceof Error ? error.message : '问题更新参数无效。' },
+        { status: 400 },
+      );
     }
 
     const anonymous = await consumeAnonymousUpdate(projectId, request);

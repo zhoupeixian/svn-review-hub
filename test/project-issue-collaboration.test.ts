@@ -57,6 +57,27 @@ describe.sequential('按项目隔离匿名问题协作', () => {
     });
   });
 
+  it('跨项目问题即使请求体无效也优先返回 404', async () => {
+    const haihuaIssue = await issueForProject('haihua');
+    const response = await patchProjectIssue(
+      new Request('https://review.test/api/project/issues/status', {
+        method: 'PATCH',
+        body: '{',
+      }),
+      {
+        params: Promise.resolve({
+          slug: 'zherp',
+          id: String(haihuaIssue.id),
+        }),
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_issue_events',
+    ).first()).toEqual({ count: 0 });
+  });
+
   it('更新一个项目的相同问题时不影响另一个项目', async () => {
     const zherpIssue = await issueForProject('zherp');
     const haihuaIssue = await issueForProject('haihua');
