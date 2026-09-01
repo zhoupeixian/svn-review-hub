@@ -17,6 +17,7 @@ export const reviewProjects = sqliteTable(
     description: text('description').notNull().default(''),
     displayOrder: integer('display_order').notNull().default(0),
     enabled: integer('enabled').notNull().default(1),
+    syncKeyEncrypted: text('sync_key_encrypted'),
     createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   },

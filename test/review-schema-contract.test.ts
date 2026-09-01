@@ -261,6 +261,7 @@ describe.sequential('审查生命周期 D1 schema', () => {
       'enabled',
       'created_at',
       'updated_at',
+      'sync_key_encrypted',
     ]);
     expect(
       await DB.prepare(

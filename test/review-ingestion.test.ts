@@ -5,14 +5,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   getIssuePage,
   ingestReview,
-  isSyncRequestAuthorized,
 } from '@/lib/reviews';
 import { parseReviewMarkdown } from '@/lib/review-parser';
 
 type TestEnv = {
   DB: D1Database;
   FILES: R2Bucket;
-  REVIEW_SYNC_KEY?: string;
 };
 
 type IssueRow = {
@@ -32,7 +30,6 @@ type IssueRow = {
 const runtime = env as unknown as TestEnv;
 const { DB, FILES } = runtime;
 const SOURCE_KEY = '2026-08-27/svn审查日志-2026-08-27.md';
-const SYNC_KEY = 'workers-review-sync-key';
 
 describe('审查日志合并导入', () => {
   it('识别可审查和按规则跳过的审查范围文案', () => {
@@ -412,7 +409,6 @@ describe('审查日志合并导入', () => {
       DB.prepare('DELETE FROM review_search'),
     ]);
     await clearBucket();
-    runtime.REVIEW_SYNC_KEY = SYNC_KEY;
   });
 
   it('拒绝非零提交计数与提交表不完整的日志', async () => {
@@ -850,11 +846,7 @@ describe('审查日志合并导入', () => {
     );
   });
 
-  it('自动同步仅凭同步密钥即可重复导入，并返回兼容的导入计数', async () => {
-    const request = syncRequest(initialMarkdown());
-    expect(request.headers.has('cookie')).toBe(false);
-    expect(isSyncRequestAuthorized(request)).toBe(true);
-
+  it('自动同步重复导入时返回兼容的导入计数', async () => {
     const first = await ingestReview(ingestInput(initialMarkdown()));
     const second = await ingestReview(ingestInput(initialMarkdown()));
 
@@ -884,12 +876,6 @@ describe('审查日志合并导入', () => {
         .bind(first.id)
         .first(),
     ).toEqual({ slug: 'zherp' });
-
-    expect(
-      isSyncRequestAuthorized(
-        new Request('https://review.test/api/reviews', { method: 'POST' }),
-      ),
-    ).toBe(false);
   });
 });
 
@@ -901,21 +887,6 @@ function ingestInput(markdown: string) {
     importedBy: 'Workers 集成测试',
     syncMode: 'automation' as const,
   };
-}
-
-function syncRequest(markdown: string): Request {
-  return new Request('https://review.test/api/reviews', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-review-sync-key': SYNC_KEY,
-    },
-    body: JSON.stringify({
-      markdown,
-      sourceKey: SOURCE_KEY,
-      sourceName: 'svn审查日志-2026-08-27.md',
-    }),
-  });
 }
 
 async function issueRows(): Promise<IssueRow[]> {
