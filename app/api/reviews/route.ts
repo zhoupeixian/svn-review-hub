@@ -5,6 +5,7 @@ import {
   ingestReviewForProject,
 } from '@/lib/reviews';
 import { parseReviewFilters } from '@/lib/review-filters';
+import { handleEnabledReviewProject } from '@/lib/project-api';
 import { uploadReviewForProject } from '@/lib/project-review-upload';
 
 export { parseReviewFilters } from '@/lib/review-filters';
@@ -75,11 +76,8 @@ export async function POST(request: Request) {
       return Response.json({ review, mode: 'automation' }, { status: 201 });
     }
 
-    const project = await getEnabledReviewProject('zherp');
-    if (!project) {
-      return Response.json({ error: '审查项目不存在。' }, { status: 404 });
-    }
-    return uploadReviewForProject(request, project);
+    return handleEnabledReviewProject('zherp', (project) =>
+      uploadReviewForProject(request, project));
   } catch (error) {
     const message = error instanceof Error ? error.message : '导入日志时发生未知错误。';
     return Response.json({ error: message }, { status: 400 });

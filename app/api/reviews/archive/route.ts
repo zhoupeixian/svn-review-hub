@@ -1,10 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
+import { handleEnabledReviewProject } from '@/lib/project-api';
 import { parseReviewFilters } from '@/lib/review-filters';
 import {
   allowAdministrator,
   ensureReviewSchema,
-  getEnabledReviewProject,
   getReviewPage,
   type ReviewProjectIdentity,
 } from '@/lib/reviews';
@@ -210,9 +210,6 @@ export async function archiveReviewsForProject(
 }
 
 export async function POST(request: Request) {
-  const project = await getEnabledReviewProject('zherp');
-  if (!project) {
-    return Response.json({ error: '审查项目不存在。' }, { status: 404 });
-  }
-  return archiveReviewsForProject(request, project);
+  return handleEnabledReviewProject('zherp', (project) =>
+    archiveReviewsForProject(request, project));
 }

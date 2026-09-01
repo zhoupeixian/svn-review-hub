@@ -1,10 +1,7 @@
 import { exportReviewsForProject } from '@/lib/project-review-export';
-import { getEnabledReviewProject } from '@/lib/reviews';
+import { handleEnabledReviewProject } from '@/lib/project-api';
 
 export async function GET(request: Request) {
-  const project = await getEnabledReviewProject('zherp');
-  if (!project) {
-    return Response.json({ error: '审查项目不存在。' }, { status: 404 });
-  }
-  return exportReviewsForProject(request, project);
+  return handleEnabledReviewProject('zherp', (project) =>
+    exportReviewsForProject(request, project));
 }

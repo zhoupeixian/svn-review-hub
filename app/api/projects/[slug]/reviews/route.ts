@@ -1,4 +1,5 @@
 import { parseReviewFilters } from '@/lib/review-filters';
+import { handleEnabledReviewProject } from '@/lib/project-api';
 import { getEnabledReviewProject, getReviewPage } from '@/lib/reviews';
 
 type Context = {
@@ -23,11 +24,8 @@ export async function GET(request: Request, { params }: Context) {
 }
 
 export async function POST(request: Request, { params }: Context) {
-  const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
-  if (!project) {
-    return Response.json({ error: '审查项目不存在。' }, { status: 404 });
-  }
-  const { uploadReviewForProject } = await import('@/lib/project-review-upload');
-  return uploadReviewForProject(request, project);
+  return handleEnabledReviewProject(params, async (project) => {
+    const { uploadReviewForProject } = await import('@/lib/project-review-upload');
+    return uploadReviewForProject(request, project);
+  });
 }
