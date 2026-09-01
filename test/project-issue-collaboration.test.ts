@@ -152,10 +152,25 @@ describe.sequential('按项目隔离匿名问题协作', () => {
        FROM review_issue_events
        ORDER BY anonymous_source_hash`,
     ).all<{ sourceHash: string }>();
+    const enumerableHashes = await Promise.all([
+      plainSha256(`1:${clientIp}`),
+      plainSha256(`2:${clientIp}`),
+    ]);
     expect(hashes.results).toHaveLength(2);
     expect(hashes.results.every((row) => /^[a-f0-9]{64}$/.test(row.sourceHash))).toBe(true);
+    expect(hashes.results.every((row) => !enumerableHashes.includes(row.sourceHash))).toBe(true);
   });
 });
+
+async function plainSha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((part) => part.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 function reviewInput(sourceKey: string) {
   return {

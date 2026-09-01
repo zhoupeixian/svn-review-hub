@@ -26,7 +26,10 @@ export default defineConfig(async ({ mode }) => {
         miniflare: {
           d1Databases: ['DB'],
           r2Buckets: ['FILES'],
-          bindings: { TEST_MIGRATIONS: migrations },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            ANONYMOUS_SOURCE_HASH_KEY: 'test-only-anonymous-source-hash-key',
+          },
         },
       }),
     ],
