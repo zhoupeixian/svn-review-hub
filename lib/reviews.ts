@@ -933,8 +933,7 @@ export async function getSyncHealth(projectId: number): Promise<SyncHealth> {
     'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
     'skipped_count AS skippedCount, p1_count AS p1Count,',
     'p2_count AS p2Count, p3_count AS p3Count, scope_text AS scopeText, id',
-    'FROM review_logs WHERE project_id = ? AND sync_mode = ?',
-    'ORDER BY updated_at DESC, id DESC LIMIT 1',
+    'FROM review_logs WHERE project_id = ? AND sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
   ].join(' '), [projectId, 'automation']);
   const normalizedLatest = latest ? normalizeReviewCounts(latest) : null;
   const latestRevision = normalizedLatest
@@ -1600,6 +1599,14 @@ export async function ingestReviewForProject(
   input: IngestInput,
 ): Promise<ReviewIngestionResult> {
   await ensureReviewSchema();
+  const storedProject = await first<ReviewProjectIdentity>(
+    `SELECT id, slug FROM review_projects
+     WHERE id = ? AND slug = ? AND enabled = 1`,
+    [project.id, project.slug],
+  );
+  if (!storedProject) {
+    throw new Error('审查项目不存在、已停用或项目标识不匹配。');
+  }
   const markdown = input.markdown.replace(/^\uFEFF/, '');
   if (!markdown.trim()) throw new Error('日志文件为空。');
   if (new TextEncoder().encode(markdown).byteLength > 2_000_000) {
@@ -1619,16 +1626,16 @@ export async function ingestReviewForProject(
   const now = new Date().toISOString();
   const sourceHash = await sha256(markdown);
   const contentObjectKey =
-    'review-logs/' + project.slug + '/' + parsed.logDate + '/' + sourceHash + '.md';
+    'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' + sourceHash + '.md';
   const { DB, FILES } = getRuntime();
-  const projectId = project.id;
+  const projectId = storedProject.id;
 
   await FILES.put(contentObjectKey, markdown, {
     httpMetadata: {
       contentType: 'text/markdown; charset=utf-8',
     },
     customMetadata: {
-      projectSlug: project.slug,
+      projectSlug: storedProject.slug,
       logDate: parsed.logDate,
       sourceName,
     },

@@ -149,6 +149,7 @@ async function runCommand(configPath: string): Promise<{
         REVIEW_PORTAL_PROJECT_SLUG: '',
         REVIEW_PORTAL_URL: '',
         REVIEW_PORTAL_SYNC_KEY: '',
+        REVIEW_PORTAL_DISPATCH_TOKEN: '',
         REVIEW_LOG_ROOT: '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],

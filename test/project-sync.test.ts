@@ -10,6 +10,7 @@ import {
   authorizeProjectSync,
   encryptProjectSyncKey,
   ensureReviewSchema,
+  ingestReviewForProject,
 } from '@/lib/reviews';
 
 type TestEnv = {
@@ -118,6 +119,40 @@ describe.sequential('按项目同步日志', () => {
         { slug: 'haihua', revision: 54000 },
       ],
     });
+    const issueRows = await DB.prepare(
+      `SELECT p.slug, i.title
+       FROM review_issues i
+       JOIN review_logs l ON l.id = i.review_id
+       JOIN review_projects p ON p.id = l.project_id
+       ORDER BY p.id`,
+    ).all();
+    expect(issueRows.results).toEqual([
+      { slug: 'zherp', title: '项目隔离问题' },
+      { slug: 'haihua', title: '项目隔离问题' },
+    ]);
+
+    const objects = await runtime.FILES.list({ prefix: 'review-logs/' });
+    expect(objects.objects.map((object) => object.key).sort()).toEqual(
+      rows.results.map((row) => row.contentObjectKey).sort(),
+    );
+    expect(new Set(objects.objects.map((object) => object.key)).size).toBe(2);
+    await expect(runtime.FILES.get(rows.results[0].contentObjectKey).then((object) => object?.text())).resolves.toContain('项目隔离问题');
+    await expect(runtime.FILES.get(rows.results[1].contentObjectKey).then((object) => object?.text())).resolves.toContain('项目隔离问题');
+  });
+
+  it('导入函数拒绝不属于同一项目的 id 和 slug 组合且不写入 D1/R2', async () => {
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'not-zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'mismatched-project',
+        sourceName: 'mismatch.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    )).rejects.toThrow('项目标识不匹配');
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 0 });
+    expect((await runtime.FILES.list()).objects).toEqual([]);
   });
 
   it('缺少项目返回 400，未知、停用或密钥错误统一返回 401 且不写入', async () => {
@@ -147,18 +182,20 @@ describe.sequential('按项目同步日志', () => {
     const encryptedBefore = await DB.prepare(
       'SELECT sync_key_encrypted AS encrypted FROM review_projects WHERE id = 1',
     ).first<{ encrypted: string }>();
-    runtime.REVIEW_SYNC_KEY = ZHERP_KEY;
-    runtime.REVIEW_SYNC_MASTER_KEY = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';
+    try {
+      runtime.REVIEW_SYNC_KEY = ZHERP_KEY;
+      runtime.REVIEW_SYNC_MASTER_KEY = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';
 
-    await expect(authorizeProjectSync('zherp', ZHERP_KEY)).rejects.toThrow(
-      '项目同步密钥无法解密',
-    );
-    const encryptedAfter = await DB.prepare(
-      'SELECT sync_key_encrypted AS encrypted FROM review_projects WHERE id = 1',
-    ).first<{ encrypted: string }>();
-    expect(encryptedAfter?.encrypted).toBe(encryptedBefore?.encrypted);
-
-    runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
+      await expect(authorizeProjectSync('zherp', ZHERP_KEY)).rejects.toThrow(
+        '项目同步密钥无法解密',
+      );
+      const encryptedAfter = await DB.prepare(
+        'SELECT sync_key_encrypted AS encrypted FROM review_projects WHERE id = 1',
+      ).first<{ encrypted: string }>();
+      expect(encryptedAfter?.encrypted).toBe(encryptedBefore?.encrypted);
+    } finally {
+      runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
+    }
   });
 });
 
@@ -187,6 +224,13 @@ function reviewMarkdown(): string {
 | --- | --- | --- | --- |
 | r54000 | alice | 项目隔离验证 | 已审查 |
 
-总体结论：未发现问题。
+总体结论：发现 1 个 P2。
+
+### P2
+
+#### 项目隔离问题
+相关 revision：54000
+
+两个项目应分别保存此问题。
 `;
 }

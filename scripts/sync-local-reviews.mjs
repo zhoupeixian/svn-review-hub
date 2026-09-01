@@ -113,12 +113,19 @@ async function findReviewLogs(root, date) {
   return files.sort();
 }
 
-async function uploadReview(file, root, project, baseUrl, key, serviceToken) {
+async function uploadReview(
+  file,
+  root,
+  projectSlug,
+  baseUrl,
+  syncKey,
+  serviceToken,
+) {
   const markdown = await readFile(file, 'utf8');
   const sourceKey = path.relative(root, file).split(path.sep).join('/');
   const headers = {
     'content-type': 'application/json',
-    'x-review-sync-key': key,
+    'x-review-sync-key': syncKey,
   };
   if (serviceToken) {
     headers['OAI-Sites-Authorization'] = 'Bearer ' + serviceToken;
@@ -127,7 +134,7 @@ async function uploadReview(file, root, project, baseUrl, key, serviceToken) {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      projectSlug: project,
+      projectSlug,
       markdown,
       sourceKey,
       sourceName: path.basename(file),
