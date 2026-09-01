@@ -2,7 +2,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const defaultLogRoot = 'D:\\SVN\\ZHERP\\automation-output\\svn审查';
 const configPath =
   process.env.REVIEW_PORTAL_CONFIG ||
   path.join(os.homedir(), '.codex', 'automations', 'zherp', 'review-portal.env');
@@ -10,13 +9,23 @@ const configPath =
 await loadConfig();
 
 const requestedDate = readDateArgument(process.argv.slice(2));
-const logRoot = process.env.REVIEW_LOG_ROOT || defaultLogRoot;
+const projectSlug = process.env.REVIEW_PORTAL_PROJECT_SLUG;
+const logRoot = process.env.REVIEW_LOG_ROOT;
 const portalUrl = process.env.REVIEW_PORTAL_URL;
 const syncKey = process.env.REVIEW_PORTAL_SYNC_KEY;
 const dispatchToken = process.env.REVIEW_PORTAL_DISPATCH_TOKEN;
 
-if (!portalUrl || !syncKey) {
-  console.error('未找到审查站同步配置。请检查 ' + configPath + '。');
+const missingConfig = [
+  ['REVIEW_PORTAL_PROJECT_SLUG', projectSlug],
+  ['REVIEW_PORTAL_URL', portalUrl],
+  ['REVIEW_PORTAL_SYNC_KEY', syncKey],
+  ['REVIEW_LOG_ROOT', logRoot],
+].filter(([, value]) => !value).map(([name]) => name);
+
+if (missingConfig.length) {
+  console.error(
+    '审查站同步配置缺少：' + missingConfig.join('、') + '。请检查 ' + configPath + '。',
+  );
   process.exitCode = 2;
 } else {
   const files = await findReviewLogs(logRoot, requestedDate);
@@ -29,6 +38,7 @@ if (!portalUrl || !syncKey) {
         const ingestion = await uploadReview(
           file,
           logRoot,
+          projectSlug,
           portalUrl,
           syncKey,
           dispatchToken,
@@ -103,12 +113,19 @@ async function findReviewLogs(root, date) {
   return files.sort();
 }
 
-async function uploadReview(file, root, baseUrl, key, serviceToken) {
+async function uploadReview(
+  file,
+  root,
+  projectSlug,
+  baseUrl,
+  syncKey,
+  serviceToken,
+) {
   const markdown = await readFile(file, 'utf8');
   const sourceKey = path.relative(root, file).split(path.sep).join('/');
   const headers = {
     'content-type': 'application/json',
-    'x-review-sync-key': key,
+    'x-review-sync-key': syncKey,
   };
   if (serviceToken) {
     headers['OAI-Sites-Authorization'] = 'Bearer ' + serviceToken;
@@ -117,6 +134,7 @@ async function uploadReview(file, root, baseUrl, key, serviceToken) {
     method: 'POST',
     headers,
     body: JSON.stringify({
+      projectSlug,
       markdown,
       sourceKey,
       sourceName: path.basename(file),
@@ -124,8 +142,7 @@ async function uploadReview(file, root, baseUrl, key, serviceToken) {
   });
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error('服务返回 ' + response.status + '：' + body.slice(0, 240));
+    throw new Error('服务返回 ' + response.status + '。');
   }
 
   const body = await response.json();

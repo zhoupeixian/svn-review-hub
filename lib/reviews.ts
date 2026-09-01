@@ -151,6 +151,12 @@ type RuntimeEnv = {
   DB: D1Database;
   FILES: R2Bucket;
   REVIEW_SYNC_KEY?: string;
+  REVIEW_SYNC_MASTER_KEY?: string;
+};
+
+export type ReviewProjectIdentity = {
+  id: number;
+  slug: string;
 };
 
 const schemaReady = new WeakMap<D1Database, Promise<void>>();
@@ -174,6 +180,153 @@ function getRuntime(): RuntimeEnv {
     throw new Error('审查站的数据存储尚未连接。');
   }
   return runtime;
+}
+
+const SYNC_KEY_ENVELOPE_VERSION = 'v1';
+const SYNC_KEY_AAD_PREFIX = 'review-project-sync-key:v1';
+
+export async function encryptProjectSyncKey(
+  project: ReviewProjectIdentity,
+  plaintext: string,
+): Promise<string> {
+  if (!plaintext) throw new Error('项目同步密钥不能为空。');
+  const key = await importSyncMasterKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv,
+      additionalData: syncKeyAdditionalData(project),
+    },
+    key,
+    new TextEncoder().encode(plaintext),
+  );
+  return [
+    SYNC_KEY_ENVELOPE_VERSION,
+    encodeBase64(iv),
+    encodeBase64(new Uint8Array(encrypted)),
+  ].join('.');
+}
+
+async function decryptProjectSyncKey(
+  project: ReviewProjectIdentity,
+  envelope: string,
+): Promise<string> {
+  const [version, ivValue, ciphertextValue, extra] = envelope.split('.');
+  if (
+    version !== SYNC_KEY_ENVELOPE_VERSION ||
+    !ivValue ||
+    !ciphertextValue ||
+    extra !== undefined
+  ) {
+    throw new Error('项目同步密钥密文格式无效。');
+  }
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: decodeBase64(ivValue),
+        additionalData: syncKeyAdditionalData(project),
+      },
+      await importSyncMasterKey(),
+      decodeBase64(ciphertextValue),
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch (error) {
+    throw new Error('项目同步密钥无法解密，请检查站点主密钥配置。', {
+      cause: error,
+    });
+  }
+}
+
+async function importSyncMasterKey(): Promise<CryptoKey> {
+  const encoded = getRuntime().REVIEW_SYNC_MASTER_KEY?.trim();
+  if (!encoded) throw new Error('站点未配置项目同步主密钥。');
+  let raw: Uint8Array<ArrayBuffer>;
+  try {
+    raw = decodeBase64(encoded);
+  } catch (error) {
+    throw new Error('项目同步主密钥必须是有效的 Base64。', { cause: error });
+  }
+  if (raw.byteLength !== 32) {
+    throw new Error('项目同步主密钥解码后必须是 32 字节。');
+  }
+  return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, [
+    'encrypt',
+    'decrypt',
+  ]);
+}
+
+function syncKeyAdditionalData(
+  project: ReviewProjectIdentity,
+): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(
+    `${SYNC_KEY_AAD_PREFIX}:${project.id}:${project.slug}`,
+  );
+}
+
+function encodeBase64(value: Uint8Array): string {
+  return btoa(String.fromCharCode(...value));
+}
+
+function decodeBase64(value: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(value);
+  const decoded = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1) {
+    decoded[index] = binary.charCodeAt(index);
+  }
+  return decoded;
+}
+
+async function ensureLegacySyncKeyMigrated(DB: D1Database): Promise<void> {
+  const legacyKey = getRuntime().REVIEW_SYNC_KEY?.trim();
+  if (!legacyKey) return;
+  const project = await DB.prepare(
+    `SELECT id, slug, sync_key_encrypted AS syncKeyEncrypted
+     FROM review_projects WHERE slug = ?`,
+  )
+    .bind(DEFAULT_REVIEW_PROJECT_SLUG)
+    .first<ReviewProjectIdentity & { syncKeyEncrypted: string | null }>();
+  if (!project || project.syncKeyEncrypted) return;
+
+  const encrypted = await encryptProjectSyncKey(project, legacyKey);
+  await DB.prepare(
+    `UPDATE review_projects SET sync_key_encrypted = ?, updated_at = ?
+     WHERE id = ? AND sync_key_encrypted IS NULL`,
+  )
+    .bind(encrypted, new Date().toISOString(), project.id)
+    .run();
+}
+
+export async function authorizeProjectSync(
+  projectSlug: string,
+  presentedKey: string,
+): Promise<ReviewProjectIdentity | null> {
+  if (!projectSlug.trim() || !presentedKey) return null;
+  await ensureReviewSchema();
+  const { DB } = getRuntime();
+  await ensureLegacySyncKeyMigrated(DB);
+  const project = await DB.prepare(
+    `SELECT id, slug, sync_key_encrypted AS syncKeyEncrypted
+     FROM review_projects
+     WHERE slug = ? AND enabled = 1`,
+  )
+    .bind(projectSlug.trim())
+    .first<ReviewProjectIdentity & { syncKeyEncrypted: string | null }>();
+  if (!project?.syncKeyEncrypted) return null;
+
+  const expected = await decryptProjectSyncKey(project, project.syncKeyEncrypted);
+  const [expectedDigest, presentedDigest] = await Promise.all([
+    sha256Bytes(expected),
+    sha256Bytes(presentedKey),
+  ]);
+  let mismatch = expectedDigest.byteLength ^ presentedDigest.byteLength;
+  const length = Math.max(expectedDigest.byteLength, presentedDigest.byteLength);
+  for (let index = 0; index < length; index += 1) {
+    mismatch |=
+      (expectedDigest[index] ?? 0) ^ (presentedDigest[index] ?? 0);
+  }
+  return mismatch === 0 ? { id: project.id, slug: project.slug } : null;
 }
 
 function reviewLogsTableSql(tableName: string, ifNotExists = false): string {
@@ -279,6 +432,7 @@ export async function ensureReviewSchema(): Promise<void> {
         "description TEXT NOT NULL DEFAULT '',",
         'display_order INTEGER NOT NULL DEFAULT 0,',
         'enabled INTEGER NOT NULL DEFAULT 1,',
+        'sync_key_encrypted TEXT,',
         'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,',
         'updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
         ')',
@@ -306,10 +460,14 @@ export async function ensureReviewSchema(): Promise<void> {
       .bind(DEFAULT_REVIEW_PROJECT_ID, DEFAULT_REVIEW_PROJECT_SLUG)
       .run();
 
-    const [logColumns, issueColumns] = await Promise.all([
+    const [projectColumns, logColumns, issueColumns] = await Promise.all([
+      DB.prepare('PRAGMA table_info(review_projects)').all<SchemaColumn>(),
       DB.prepare('PRAGMA table_info(review_logs)').all<SchemaColumn>(),
       DB.prepare('PRAGMA table_info(review_issues)').all<SchemaColumn>(),
     ]);
+    const projectColumnNames = new Set(
+      (projectColumns.results ?? []).map((column) => column.name),
+    );
     const logColumnNames = new Set(
       (logColumns.results ?? []).map((column) => column.name),
     );
@@ -318,6 +476,11 @@ export async function ensureReviewSchema(): Promise<void> {
     );
     const needsProjectMigration = !logColumnNames.has('project_id');
     const upgrades: string[] = [];
+    if (!projectColumnNames.has('sync_key_encrypted')) {
+      upgrades.push(
+        'ALTER TABLE review_projects ADD COLUMN sync_key_encrypted TEXT',
+      );
+    }
     if (!logColumnNames.has('archived_at')) {
       upgrades.push('ALTER TABLE review_logs ADD COLUMN archived_at TEXT');
     }
@@ -438,6 +601,7 @@ export async function ensureReviewSchema(): Promise<void> {
       integrityStatements.map((statement) => DB.prepare(statement)),
     );
     await ensureReviewSearch(DB);
+    await ensureLegacySyncKeyMigrated(DB);
     await DB.prepare('PRAGMA optimize').run();
   })();
 
@@ -1421,6 +1585,28 @@ type IngestInput = {
 export async function ingestReview(
   input: IngestInput,
 ): Promise<ReviewIngestionResult> {
+  await ensureReviewSchema();
+  const defaultProject = await first<ReviewProjectIdentity>(
+    'SELECT id, slug FROM review_projects WHERE slug = ?',
+    [DEFAULT_REVIEW_PROJECT_SLUG],
+  );
+  if (!defaultProject) throw new Error('默认 ZHERP 审查项目不存在。');
+  return ingestReviewForProject(defaultProject, input);
+}
+
+export async function ingestReviewForProject(
+  project: ReviewProjectIdentity,
+  input: IngestInput,
+): Promise<ReviewIngestionResult> {
+  await ensureReviewSchema();
+  const storedProject = await first<ReviewProjectIdentity>(
+    `SELECT id, slug FROM review_projects
+     WHERE id = ? AND slug = ? AND enabled = 1`,
+    [project.id, project.slug],
+  );
+  if (!storedProject) {
+    throw new Error('审查项目不存在、已停用或项目标识不匹配。');
+  }
   const markdown = input.markdown.replace(/^\uFEFF/, '');
   if (!markdown.trim()) throw new Error('日志文件为空。');
   if (new TextEncoder().encode(markdown).byteLength > 2_000_000) {
@@ -1440,20 +1626,16 @@ export async function ingestReview(
   const now = new Date().toISOString();
   const sourceHash = await sha256(markdown);
   const contentObjectKey =
-    'review-logs/' + parsed.logDate + '/' + sourceHash + '.md';
+    'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' + sourceHash + '.md';
   const { DB, FILES } = getRuntime();
-  const defaultProject = await first<{ id: number }>(
-    'SELECT id FROM review_projects WHERE slug = ?',
-    [DEFAULT_REVIEW_PROJECT_SLUG],
-  );
-  if (!defaultProject) throw new Error('默认 ZHERP 审查项目不存在。');
-  const projectId = defaultProject.id;
+  const projectId = storedProject.id;
 
   await FILES.put(contentObjectKey, markdown, {
     httpMetadata: {
       contentType: 'text/markdown; charset=utf-8',
     },
     customMetadata: {
+      projectSlug: storedProject.slug,
       logDate: parsed.logDate,
       sourceName,
     },
@@ -1702,17 +1884,14 @@ export async function allowAdministrator(user: ChatGPTUser): Promise<boolean> {
   );
 }
 
-export function isSyncRequestAuthorized(request: Request): boolean {
-  const expected = getRuntime().REVIEW_SYNC_KEY;
-  return Boolean(expected && request.headers.get('x-review-sync-key') === expected);
-}
-
 async function sha256(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(value),
-  );
-  return [...new Uint8Array(digest)]
+  return [...await sha256Bytes(value)]
     .map((part) => part.toString(16).padStart(2, '0'))
     .join('');
+}
+
+async function sha256Bytes(value: string): Promise<Uint8Array> {
+  return new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)),
+  );
 }

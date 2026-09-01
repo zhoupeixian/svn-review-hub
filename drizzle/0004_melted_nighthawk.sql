@@ -1,0 +1,1 @@
+ALTER TABLE `review_projects` ADD `sync_key_encrypted` text;
