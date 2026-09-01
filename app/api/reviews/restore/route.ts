@@ -1,10 +1,17 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
-import { allowAdministrator, ensureReviewSchema } from '@/lib/reviews';
+import {
+  allowAdministrator,
+  ensureReviewSchema,
+  getEnabledReviewProject,
+} from '@/lib/reviews';
 
 type RuntimeEnv = { DB: D1Database };
 
-export async function POST(request: Request) {
+export async function restoreReviewsForProject(
+  request: Request,
+  projectId: number,
+): Promise<Response> {
   try {
     const user = await getChatGPTUser();
     if (!user) return Response.json({ error: '请先使用管理员账号登录。' }, { status: 401 });
@@ -24,20 +31,20 @@ export async function POST(request: Request) {
     const database = (env as unknown as RuntimeEnv).DB;
     const marks = uniqueIds.map(() => '?').join(',');
     const before = await database
-      .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE id IN (${marks}) AND archived_at IS NOT NULL`)
-      .bind(...uniqueIds)
+      .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL`)
+      .bind(projectId, ...uniqueIds)
       .first<{ count: number }>();
     if ((before?.count ?? 0) !== uniqueIds.length) {
       return Response.json({ error: '仅可恢复已归档且存在的日志。' }, { status: 404 });
     }
     const result = await database
-      .prepare(`UPDATE review_logs SET archived_at = NULL WHERE id IN (${marks}) AND archived_at IS NOT NULL`)
-      .bind(...uniqueIds)
+      .prepare(`UPDATE review_logs SET archived_at = NULL WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL`)
+      .bind(projectId, ...uniqueIds)
       .run();
     if (Number(result.meta.changes ?? 0) !== uniqueIds.length) {
       const check = await database
-        .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE id IN (${marks}) AND archived_at IS NULL`)
-        .bind(...uniqueIds)
+        .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL`)
+        .bind(projectId, ...uniqueIds)
         .first<{ count: number }>();
       if ((check?.count ?? 0) === uniqueIds.length) {
         return Response.json({ restoredCount: uniqueIds.length });
@@ -51,4 +58,12 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+}
+
+export async function POST(request: Request) {
+  const project = await getEnabledReviewProject('zherp');
+  if (!project) {
+    return Response.json({ error: '审查项目不存在。' }, { status: 404 });
+  }
+  return restoreReviewsForProject(request, project.id);
 }

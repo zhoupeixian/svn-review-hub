@@ -1,8 +1,13 @@
 import { exportIssuesForProject } from '@/lib/project-review-export';
 import { getEnabledReviewProject } from '@/lib/reviews';
 
-export async function GET(request: Request) {
-  const project = await getEnabledReviewProject('zherp');
+type Context = {
+  params: Promise<{ slug: string }>;
+};
+
+export async function GET(request: Request, { params }: Context) {
+  const { slug } = await params;
+  const project = await getEnabledReviewProject(slug);
   if (!project) {
     return Response.json({ error: '审查项目不存在。' }, { status: 404 });
   }

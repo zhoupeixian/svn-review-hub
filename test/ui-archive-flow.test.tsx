@@ -5,6 +5,11 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ArchiveExplorer from '../app/archive/archive-explorer';
 import ArchiveManager from '../app/admin/archive-manager';
+import UploadForm from '../app/admin/upload-form';
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 
 const activeReview = {
   id: 1,
@@ -38,7 +43,13 @@ const emptyPage = { items: [], nextCursor: null, hasMore: false };
 const zherpArchiveProps = {
   projectBasePath: '/projects/zherp',
   reviewsApiPath: '/api/projects/zherp/reviews',
-  reviewsExportPath: '/api/reviews/export',
+  reviewsExportPath: '/api/projects/zherp/reviews/export',
+};
+
+const haihuaManagerProps = {
+  reviewsApiPath: '/api/projects/haihua/reviews',
+  archiveApiPath: '/api/projects/haihua/reviews/archive',
+  restoreApiPath: '/api/projects/haihua/reviews/restore',
 };
 
 describe('归档库与归档管理 UI', () => {
@@ -79,7 +90,7 @@ describe('归档库与归档管理 UI', () => {
     expect(requestUrl).toContain('cursor=next+page');
   });
 
-  it('项目归档库只使用当前项目路径，并在未项目化导出前隐藏导出入口', async () => {
+  it('项目归档库只使用当前项目路径和导出入口', async () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [], nextCursor: null, hasMore: false,
     }), { status: 200 }));
@@ -89,13 +100,38 @@ describe('归档库与归档管理 UI', () => {
       initialHasMore
       projectBasePath="/projects/haihua"
       reviewsApiPath="/api/projects/haihua/reviews"
-      reviewsExportPath={null}
+      reviewsExportPath="/api/projects/haihua/reviews/export"
     />);
 
     expect(screen.getByRole('link', { name: '查看归档原文与历史 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/9');
-    expect(screen.queryByRole('link', { name: '导出归档清单' })).toBeNull();
+    expect(screen.getByRole('link', { name: '导出归档清单' }).getAttribute('href')).toContain('/api/projects/haihua/reviews/export?');
     await userEvent.click(screen.getByRole('button', { name: '加载更多归档日志' }));
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/reviews?');
+  });
+
+  it('项目上传只提交到当前项目 API', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ review: { logDate: '2026-09-01' } }), {
+        status: 201,
+      }),
+    );
+    render(
+      <UploadForm uploadApiPath="/api/projects/haihua/reviews" />,
+    );
+    const fileInput = document.querySelector('input[type="file"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error('未找到上传控件。');
+    }
+    await userEvent.upload(
+      fileInput,
+      new File(['# 海华日志'], 'haihua.md', { type: 'text/markdown' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: '导入日志' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/haihua/reviews',
+      expect.objectContaining({ method: 'POST' }),
+    ));
   });
 
   it('归档筛选控件变更后刷新首屏并沿用日期、级别、状态、Revision、提交人和关键词', async () => {
@@ -221,6 +257,7 @@ describe('归档库与归档管理 UI', () => {
     render(<ArchiveManager
       initialActive={{ items: [activeReview], nextCursor: null, hasMore: false }}
       initialArchived={emptyPage}
+      {...haihuaManagerProps}
     />);
 
     await userEvent.click(screen.getByRole('checkbox', { name: /当前日志/ }));
@@ -247,6 +284,7 @@ describe('归档库与归档管理 UI', () => {
     render(<ArchiveManager
       initialActive={{ items: [activeReview], nextCursor: null, hasMore: false }}
       initialArchived={emptyPage}
+      {...haihuaManagerProps}
     />);
 
     await userEvent.type(screen.getByLabelText('按作者筛选活动日志'), 'alice');
@@ -265,6 +303,7 @@ describe('归档库与归档管理 UI', () => {
     render(<ArchiveManager
       initialActive={{ items: [activeReview], nextCursor: null, hasMore: false }}
       initialArchived={emptyPage}
+      {...haihuaManagerProps}
     />);
 
     const severity = screen.getByLabelText('按问题级别筛选活动日志');
@@ -288,17 +327,18 @@ describe('归档库与归档管理 UI', () => {
     render(<ArchiveManager
       initialActive={emptyPage}
       initialArchived={{ items: [archivedReview], nextCursor: null, hasMore: false }}
+      {...haihuaManagerProps}
     />);
 
     const archivedRow = screen.getByRole('article', { name: '已归档日志' });
     await userEvent.click(within(archivedRow).getByRole('button', { name: '恢复' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/reviews/restore', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/haihua/reviews/restore', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ ids: [9] }),
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/reviews?scope=active');
-    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/reviews?scope=archived');
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/haihua/reviews?scope=active');
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/haihua/reviews?scope=archived');
     expect(await screen.findByText('已恢复 1 份日志。')).toBeTruthy();
   });
 });

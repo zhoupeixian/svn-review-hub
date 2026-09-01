@@ -106,11 +106,11 @@ describe('当前审查协作 UI', () => {
       initialHasMore={false}
       projectBasePath="/projects/haihua"
       issuesApiPath="/api/projects/haihua/issues"
-      issuesExportPath={null}
+      issuesExportPath="/api/projects/haihua/issues/export"
     />);
 
     expect(screen.getByRole('link', { name: '打开原日志 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/1#issue-42');
-    expect(screen.queryByRole('link', { name: '导出 Excel 跟进表' })).toBeNull();
+    expect(screen.getByRole('link', { name: '导出 Excel 跟进表' }).getAttribute('href')).toContain('/api/projects/haihua/issues/export?');
     await userEvent.click(screen.getByRole('button', { name: '应用筛选' }));
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/issues?');
     expect(window.location.pathname).toBe('/projects/haihua/issues');

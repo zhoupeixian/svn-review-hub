@@ -13,7 +13,7 @@ type Props = {
 export default async function ProjectAdminPage({ params }: Props) {
   const { slug } = await params;
   const project = await getEnabledReviewProject(slug);
-  if (!project || project.slug !== 'zherp') notFound();
+  if (!project) notFound();
   const basePath = `/projects/${project.slug}`;
   const user = await requireChatGPTUser(`${basePath}/admin`);
   const isAdmin = await allowAdministrator(user);
@@ -56,10 +56,16 @@ export default async function ProjectAdminPage({ params }: Props) {
         <section className="mt-8 rounded-3xl border border-[#d8e4d9] bg-white p-6 shadow-[0_12px_34px_rgba(31,77,51,0.05)] sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#4c8068]">手工补录 / 更正</p>
           <h2 className="mt-1 text-xl font-black tracking-tight text-[#243e31]">上传审查日志 Markdown</h2>
-          <p className="mt-2 text-sm leading-6 text-[#66766d]">当前兼容入口只用于 ZHERP；其他项目的项目内上传将在后续管理工单中启用。</p>
-          <UploadForm />
+          <p className="mt-2 text-sm leading-6 text-[#66766d]">日志将固定写入当前审查项目，不提供跨项目目标选择。</p>
+          <UploadForm uploadApiPath={`/api/projects/${project.slug}/reviews`} />
         </section>
-        <ArchiveManager initialActive={activePage} initialArchived={archivedPage} />
+        <ArchiveManager
+          initialActive={activePage}
+          initialArchived={archivedPage}
+          reviewsApiPath={`/api/projects/${project.slug}/reviews`}
+          archiveApiPath={`/api/projects/${project.slug}/reviews/archive`}
+          restoreApiPath={`/api/projects/${project.slug}/reviews/restore`}
+        />
       </div>
     </main>
   );

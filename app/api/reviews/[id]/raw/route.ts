@@ -16,7 +16,7 @@ export async function GET(_: Request, { params }: Props) {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',
       'content-disposition':
-        "attachment; filename*=UTF-8''" + encodeURIComponent(review.sourceName),
+        "attachment; filename*=UTF-8''" + encodeURIComponent(`zherp-${review.sourceName}`),
     },
   });
 }

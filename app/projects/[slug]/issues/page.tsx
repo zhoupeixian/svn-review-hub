@@ -52,7 +52,7 @@ export default async function ProjectIssuesPage({ params, searchParams }: Props)
           initialHasMore={page.hasMore}
           projectBasePath={basePath}
           issuesApiPath={`/api/projects/${project.slug}/issues`}
-          issuesExportPath={project.slug === 'zherp' ? '/api/issues/export' : null}
+          issuesExportPath={`/api/projects/${project.slug}/issues/export`}
         />
       </div>
     </main>

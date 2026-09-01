@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export default function UploadForm() {
+export default function UploadForm({ uploadApiPath }: { uploadApiPath: string }) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<string>('');
@@ -22,7 +22,7 @@ export default function UploadForm() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('/api/reviews', {
+      const response = await fetch(uploadApiPath, {
         method: 'POST',
         body: formData,
       });

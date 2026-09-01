@@ -1,7 +1,12 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { parseReviewFilters } from '@/lib/review-filters';
-import { allowAdministrator, ensureReviewSchema, getReviewPage } from '@/lib/reviews';
+import {
+  allowAdministrator,
+  ensureReviewSchema,
+  getEnabledReviewProject,
+  getReviewPage,
+} from '@/lib/reviews';
 
 type RuntimeEnv = { DB: D1Database };
 type ArchiveBody = {
@@ -24,8 +29,13 @@ function normalizeIds(value: unknown): number[] {
   return [...new Set(ids)];
 }
 
-async function idsFromBody(body: ArchiveBody): Promise<number[]> {
-  if (body.ids !== undefined) return normalizeIds(body.ids);
+async function idsFromBody(
+  projectId: number,
+  body: ArchiveBody,
+): Promise<{ ids: number[]; explicit: boolean }> {
+  if (body.ids !== undefined) {
+    return { ids: normalizeIds(body.ids), explicit: true };
+  }
   if (!body.filters || typeof body.filters !== 'object' || Array.isArray(body.filters)) {
     throw new Error('请提供日志 ID 或已验证过滤条件。');
   }
@@ -37,36 +47,38 @@ async function idsFromBody(body: ArchiveBody): Promise<number[]> {
   const ids: number[] = [];
   let cursor: string | undefined;
   do {
-    const page = await getReviewPage(1, { ...filters, scope: 'active', cursor });
+    const page = await getReviewPage(projectId, { ...filters, scope: 'active', cursor });
     ids.push(...page.items.map((item) => item.id));
     cursor = page.nextCursor ?? undefined;
   } while (cursor);
   if (!ids.length) throw new Error('没有符合条件的活动日志。');
-  return ids;
+  return { ids, explicit: false };
 }
 
 function placeholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(',');
 }
 
-async function currentCounts(ids: number[]) {
+async function currentCounts(projectId: number, ids: number[]) {
   const database = db();
   const marks = placeholders(ids.length);
   const reviewCount = await database
-    .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE id IN (${marks}) AND archived_at IS NULL`)
-    .bind(...ids)
+    .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL`)
+    .bind(projectId, ...ids)
     .first<{ count: number }>();
   const issueCounts = await database
     .prepare(
       `SELECT COUNT(*) AS issueCount,
               SUM(CASE WHEN status IN ('open', 'pending_review') THEN 1 ELSE 0 END) AS openIssueCount
-       FROM review_issues WHERE review_id IN (${marks}) AND source_current = 1`,
+       FROM review_issues i
+       JOIN review_logs l ON l.id = i.review_id
+       WHERE l.project_id = ? AND i.review_id IN (${marks}) AND i.source_current = 1`,
     )
-    .bind(...ids)
+    .bind(projectId, ...ids)
     .first<{ issueCount: number; openIssueCount: number | null }>();
   const revisions = await database
-    .prepare(`SELECT COALESCE(SUM(revision_count), 0) AS revisionCount FROM review_logs WHERE id IN (${marks})`)
-    .bind(...ids)
+    .prepare(`SELECT COALESCE(SUM(revision_count), 0) AS revisionCount FROM review_logs WHERE project_id = ? AND id IN (${marks})`)
+    .bind(projectId, ...ids)
     .first<{ revisionCount: number }>();
   return {
     reviewCount: reviewCount?.count ?? 0,
@@ -76,7 +88,10 @@ async function currentCounts(ids: number[]) {
   };
 }
 
-export async function POST(request: Request) {
+export async function archiveReviewsForProject(
+  request: Request,
+  projectId: number,
+): Promise<Response> {
   try {
     const user = await getChatGPTUser();
     if (!user) return Response.json({ error: '请先使用管理员账号登录。' }, { status: 401 });
@@ -91,9 +106,12 @@ export async function POST(request: Request) {
     const database = db();
 
     if (body.mode === 'preview') {
-      const ids = await idsFromBody(body);
-      const counts = await currentCounts(ids);
+      const { ids, explicit } = await idsFromBody(projectId, body);
+      const counts = await currentCounts(projectId, ids);
       if (counts.reviewCount !== ids.length) {
+        if (explicit) {
+          return Response.json({ error: '未找到当前项目的活动日志。' }, { status: 404 });
+        }
         return Response.json({ error: '日志范围已变化，请重新筛选。' }, { status: 409 });
       }
       const token = crypto.randomUUID();
@@ -107,7 +125,7 @@ export async function POST(request: Request) {
         .bind(
           token,
           user.userId,
-          JSON.stringify(ids),
+          JSON.stringify({ projectId, ids }),
           counts.reviewCount,
           counts.revisionCount,
           counts.issueCount,
@@ -133,10 +151,19 @@ export async function POST(request: Request) {
       return Response.json({ error: '预览令牌无效或已过期。' }, { status: 409 });
     }
     let ids: number[];
+    let previewProjectId: number;
     try {
-      ids = normalizeIds(JSON.parse(preview.reviewIdsJson));
+      const stored = JSON.parse(preview.reviewIdsJson) as {
+        projectId?: unknown;
+        ids?: unknown;
+      };
+      previewProjectId = Number(stored.projectId);
+      ids = normalizeIds(stored.ids);
     } catch {
       return Response.json({ error: '预览令牌内容无效。' }, { status: 409 });
+    }
+    if (previewProjectId !== projectId) {
+      return Response.json({ error: '未找到当前项目的归档预览。' }, { status: 404 });
     }
     if (ids.length !== preview.reviewCount) {
       return Response.json({ error: '预览范围已变化，请重新预览。' }, { status: 409 });
@@ -144,8 +171,8 @@ export async function POST(request: Request) {
     const marks = placeholders(ids.length);
     const timestamp = new Date().toISOString();
     const before = await database
-      .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE id IN (${marks}) AND archived_at IS NULL`)
-      .bind(...ids)
+      .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL`)
+      .bind(projectId, ...ids)
       .first<{ count: number }>();
     if ((before?.count ?? 0) !== ids.length) {
       return Response.json({ error: '预览范围已变化，请重新预览。' }, { status: 409 });
@@ -153,16 +180,16 @@ export async function POST(request: Request) {
     const result = await database
       .prepare(
         `UPDATE review_logs SET archived_at = ?
-         WHERE id IN (${marks}) AND archived_at IS NULL
-           AND (SELECT COUNT(*) FROM review_logs WHERE id IN (${marks}) AND archived_at IS NULL) = ?`,
+         WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL
+           AND (SELECT COUNT(*) FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL) = ?`,
       )
-      .bind(timestamp, ...ids, ...ids, ids.length)
+      .bind(timestamp, projectId, ...ids, projectId, ...ids, ids.length)
       .run();
     const changed = Number(result.meta.changes ?? 0);
     if (changed !== ids.length) {
       const check = await database
-        .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE id IN (${marks}) AND archived_at IS NOT NULL`)
-        .bind(...ids)
+        .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL`)
+        .bind(projectId, ...ids)
         .first<{ count: number }>();
       if ((check?.count ?? 0) === ids.length) {
         await database.prepare('DELETE FROM archive_operation_previews WHERE token = ?').bind(body.previewToken).run();
@@ -178,4 +205,12 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+}
+
+export async function POST(request: Request) {
+  const project = await getEnabledReviewProject('zherp');
+  if (!project) {
+    return Response.json({ error: '审查项目不存在。' }, { status: 404 });
+  }
+  return archiveReviewsForProject(request, project.id);
 }

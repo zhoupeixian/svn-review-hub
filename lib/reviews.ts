@@ -1002,10 +1002,10 @@ async function collectIssuePageItems(
 }
 
 export async function getIssueExportRows(
-  projectId: number,
+  project: ReviewProjectIdentity,
   filters: IssueListFilters = {},
 ): Promise<ReviewExportRow[]> {
-  const items = await collectIssuePageItems(projectId, filters);
+  const items = await collectIssuePageItems(project.id, filters);
   if (!items.length) return [];
   const rows = await all<IssueExportRowDb>([
     'SELECT i.id, i.issue_key AS issueKey, i.status, i.status_note AS statusNote,',
@@ -1031,19 +1031,19 @@ export async function getIssueExportRows(
       author: row.author,
       logDate: row.logDate,
       sourceName: row.sourceName,
-      detailUrl: `/reviews/${row.reviewId}#issue-${row.id}`,
+      detailUrl: `/projects/${project.slug}/reviews/${row.reviewId}#issue-${row.id}`,
     }];
   });
 }
 
 export async function getReviewExportRows(
-  projectId: number,
+  project: ReviewProjectIdentity,
   filters: ReviewListFilters = {},
 ): Promise<ReviewExportRow[]> {
   const items: ReviewSummary[] = [];
   let cursor = filters.cursor;
   while (items.length < EXPORT_MAX_ROWS) {
-    const page = await getReviewPage(projectId, { ...filters, cursor, limit: 50 });
+    const page = await getReviewPage(project.id, { ...filters, cursor, limit: 50 });
     items.push(...page.items);
     if (!page.hasMore || !page.nextCursor) break;
     cursor = page.nextCursor;
@@ -1072,7 +1072,8 @@ export async function getReviewExportRows(
       return [{
         issueKey: '', status: '', statusNote: '', updatedAt: review.updatedAt,
         severity: '', title: review.title, revision: '', author: '',
-        logDate: review.logDate, sourceName: review.sourceName, detailUrl: `/reviews/${review.id}`,
+        logDate: review.logDate, sourceName: review.sourceName,
+        detailUrl: `/projects/${project.slug}/reviews/${review.id}`,
       }];
     }
     return reviewRows.map((row) => ({
@@ -1086,7 +1087,9 @@ export async function getReviewExportRows(
       author: row.author,
       logDate: row.logDate,
       sourceName: row.sourceName,
-      detailUrl: row.id ? `/reviews/${row.reviewId}#issue-${row.id}` : `/reviews/${row.reviewId}`,
+      detailUrl: row.id
+        ? `/projects/${project.slug}/reviews/${row.reviewId}#issue-${row.id}`
+        : `/projects/${project.slug}/reviews/${row.reviewId}`,
     }));
   }).slice(0, EXPORT_MAX_ROWS);
 }
@@ -1155,7 +1158,7 @@ function protectSpreadsheetText(value: string): string {
 }
 
 function safeDetailUrl(path: string, origin: string): string {
-  if (!/^\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
+  if (!/^\/projects\/[a-z0-9-]+\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
     throw new Error('导出详情链接无效。');
   }
   return new URL(path, origin).toString();
