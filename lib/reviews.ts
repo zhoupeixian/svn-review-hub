@@ -1158,7 +1158,7 @@ function protectSpreadsheetText(value: string): string {
 }
 
 function safeDetailUrl(path: string, origin: string): string {
-  if (!/^\/projects\/[a-z0-9-]+\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
+  if (!/^\/projects\/[^/?#]+\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
     throw new Error('导出详情链接无效。');
   }
   return new URL(path, origin).toString();
