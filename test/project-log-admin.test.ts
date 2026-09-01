@@ -140,6 +140,29 @@ describe.sequential('按审查项目管理日志', () => {
     expect(await archivedAt(haihuaId)).toBeNull();
   });
 
+  it.each(['hai_hua', 'team.v2'])('问题导出支持项目 slug %s', async (slug) => {
+    await DB.prepare(
+      `UPDATE review_projects SET slug = ? WHERE id = 2`,
+    ).bind(slug).run();
+    await uploadProjectReview(uploadRequest(), {
+      params: Promise.resolve({ slug }),
+    });
+    const reviewId = await reviewId(slug);
+    const currentIssueId = await issueId(slug);
+
+    const response = await exportProjectIssues(
+      new Request(`https://review.test/api/projects/${slug}/issues/export`),
+      { params: Promise.resolve({ slug }) },
+    );
+
+    expect(response.status).toBe(200);
+    const workbook = XLSX.read(await response.arrayBuffer(), { type: 'array' });
+    const sheet = workbook.Sheets['问题跟进'];
+    expect(sheet.J2.l?.Target).toBe(
+      `https://review.test/projects/${slug}/reviews/${reviewId}#issue-${currentIssueId}`,
+    );
+  });
+
   it('导出和原始日志下载只返回当前项目并在文件名与链接中包含项目标识', async () => {
     await uploadProjectReview(uploadRequest(), {
       params: Promise.resolve({ slug: 'zherp' }),
