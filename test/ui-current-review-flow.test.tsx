@@ -250,7 +250,13 @@ describe('当前审查协作 UI', () => {
   });
 
   it('只读状态面板仍显示处理信息，但不提供保存操作', () => {
-    render(<IssueStatusPanel issue={{ ...issue, statusNote: '已归档说明' }} readOnly />);
+    render(
+      <IssueStatusPanel
+        issue={{ ...issue, statusNote: '已归档说明' }}
+        statusApiPath="/api/projects/zherp/issues/42/status"
+        readOnly
+      />,
+    );
     expect(screen.getByText('当前状态：待处理').getAttribute('data-status')).toBe('open');
     expect(screen.getByText('处理说明：已归档说明')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存状态' })).toBeNull();
@@ -259,12 +265,21 @@ describe('当前审查协作 UI', () => {
   it('状态更新成功显示新状态，409 保留说明', async () => {
     const fetchMock = vi.spyOn(global, 'fetch');
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, status: 'resolved', statusNote: '已修复', statusUpdatedAt: '2026-08-27T12:00:00.000Z', version: 1 }), { status: 200 }));
-    render(<IssueStatusPanel issue={{ ...issue }} />);
+    render(
+      <IssueStatusPanel
+        issue={{ ...issue }}
+        statusApiPath="/api/projects/haihua/issues/42/status"
+      />,
+    );
     const note = screen.getByLabelText('处理说明');
     await userEvent.type(note, '已修复');
     await userEvent.click(screen.getByRole('button', { name: '保存状态' }));
     expect(await screen.findByText('状态已更新。')).toBeTruthy();
     expect(screen.getByText('处理说明：已修复')).toBeTruthy();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/projects/haihua/issues/42/status',
+      expect.objectContaining({ method: 'PATCH' }),
+    );
 
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: '问题版本已变化，请刷新后重试。', currentVersion: 2 }), { status: 409 }));
     await userEvent.clear(note);

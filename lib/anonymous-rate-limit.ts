@@ -23,12 +23,20 @@ async function hashClient(value: string): Promise<string> {
     .join('');
 }
 
-/** D1 only receives a one-way client hash and a short-lived counter. */
-export async function allowAnonymousUpdate(request: Request): Promise<boolean> {
+export type AnonymousUpdateLimit = {
+  allowed: boolean;
+  sourceHash: string;
+};
+
+/** D1 only receives a project-bound one-way source hash and a short-lived counter. */
+export async function consumeAnonymousUpdate(
+  projectId: number,
+  request: Request,
+): Promise<AnonymousUpdateLimit> {
   await ensureReviewSchema();
   const db = getDb();
   const clientHash = await hashClient(
-    request.headers.get('CF-Connecting-IP') || ANONYMOUS_BUCKET,
+    `${projectId}:${request.headers.get('CF-Connecting-IP') || ANONYMOUS_BUCKET}`,
   );
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
@@ -51,7 +59,10 @@ export async function allowAnonymousUpdate(request: Request): Promise<boolean> {
     )
     .bind(clientHash, MAX_REQUESTS)
     .run();
-  return Number(updated.meta.changes ?? 0) === 1;
+  return {
+    allowed: Number(updated.meta.changes ?? 0) === 1,
+    sourceHash: clientHash,
+  };
 }
 
 export const ANONYMOUS_UPDATE_WINDOW_MS = WINDOW_MS;

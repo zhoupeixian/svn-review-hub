@@ -72,7 +72,11 @@ export default async function ProjectReviewPage({ params }: Props) {
                     {issue.relatedRevisions && <span className="meta-chip">r{issue.relatedRevisions.split('、').join(' · r')}</span>}
                   </div>
                   <p className="mt-4 max-w-4xl whitespace-pre-line text-sm leading-7 text-[#607167]">{relativizeProjectPaths(issue.detail)}</p>
-                  <IssueStatusPanel issue={issue} readOnly={review.archivedAt !== null || project.slug !== 'zherp'} />
+                  <IssueStatusPanel
+                    issue={issue}
+                    statusApiPath={`/api/projects/${encodeURIComponent(project.slug)}/issues/${issue.id}/status`}
+                    readOnly={review.archivedAt !== null}
+                  />
                 </article>
               ))}
             </div>
