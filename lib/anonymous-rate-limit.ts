@@ -16,7 +16,10 @@ function getDb(): D1Database {
   return db;
 }
 
-async function hashAnonymousSource(secret: string, value: string): Promise<string> {
+export async function hashAnonymousSource(secret: string, value: string): Promise<string> {
+  if (secret.length < 32) {
+    throw new Error('匿名来源摘要密钥未配置或长度不足。');
+  }
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
@@ -49,11 +52,8 @@ export async function consumeAnonymousUpdate(
   const runtime = env as unknown as RuntimeEnv;
   const db = getDb();
   const hashKey = runtime.ANONYMOUS_SOURCE_HASH_KEY;
-  if (typeof hashKey !== 'string' || hashKey.length < 32) {
-    throw new Error('匿名来源摘要密钥未配置或长度不足。');
-  }
   const anonymousSourceHash = await hashAnonymousSource(
-    hashKey,
+    typeof hashKey === 'string' ? hashKey : '',
     `${projectId}:${request.headers.get('CF-Connecting-IP') || ANONYMOUS_BUCKET}`,
   );
   const now = Date.now();

@@ -1,0 +1,3 @@
+# 仅供站点服务端使用。请在本地 .dev.vars 和部署环境中分别配置，
+# 不要复制到自动化主机的 review-portal.env。
+ANONYMOUS_SOURCE_HASH_KEY=replace-with-at-least-32-random-characters

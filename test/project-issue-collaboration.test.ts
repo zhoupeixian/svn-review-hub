@@ -3,6 +3,7 @@
 import { env } from 'cloudflare:workers';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PATCH as patchProjectIssue } from '@/app/api/projects/[slug]/issues/[id]/status/route';
+import { hashAnonymousSource } from '@/lib/anonymous-rate-limit';
 import { ensureReviewSchema, ingestReview, ingestReviewForProject } from '@/lib/reviews';
 
 const DB = (env as unknown as { DB: D1Database }).DB;
@@ -159,6 +160,21 @@ describe.sequential('按项目隔离匿名问题协作', () => {
     expect(hashes.results).toHaveLength(2);
     expect(hashes.results.every((row) => /^[a-f0-9]{64}$/.test(row.sourceHash))).toBe(true);
     expect(hashes.results.every((row) => !enumerableHashes.includes(row.sourceHash))).toBe(true);
+  });
+
+  it('用至少 32 字符的服务端密钥生成可验证且随密钥变化的 HMAC', async () => {
+    const source = '1:192.0.2.12';
+    const firstKey = '0123456789abcdef0123456789abcdef';
+    const secondKey = 'fedcba9876543210fedcba9876543210';
+
+    await expect(hashAnonymousSource('', source)).rejects.toThrow('长度不足');
+    await expect(hashAnonymousSource('too-short', source)).rejects.toThrow('长度不足');
+    await expect(hashAnonymousSource(firstKey, source)).resolves.toBe(
+      '296e51feb916c3a046f5152a9f97ae5dddc6068d8c016b58637cf14e65ae270c',
+    );
+    await expect(hashAnonymousSource(secondKey, source)).resolves.not.toBe(
+      await hashAnonymousSource(firstKey, source),
+    );
   });
 });
 
