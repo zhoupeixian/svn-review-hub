@@ -39,7 +39,7 @@ describe.sequential('问题导出', () => {
       ['严重级别', '状态', '问题标题', '关联 Revision', '提交人', '日志日期', '来源日志', '处理说明', '最后更新', '详情链接'],
       expect.arrayContaining(['P1', '待处理', '公式,标题']),
     ]));
-    expect(worksheet.J2.l?.Target).toBe('https://review.test/reviews/2#issue-2');
+    expect(worksheet.J2.l?.Target).toBe('https://review.test/projects/zherp/reviews/2#issue-2');
     expect(worksheet.H2.v).toBe("'=SUM(A1),\n中文 \"说明\"");
     expect(worksheet['!autofilter']?.ref).toBe('A1:J2');
   });

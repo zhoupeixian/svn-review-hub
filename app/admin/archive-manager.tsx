@@ -5,10 +5,22 @@ import type { PageResult, ReviewSummary } from '../../lib/reviews';
 import { ISSUE_STATUS_LABELS, ISSUE_STATUSES } from '../../lib/issue-lifecycle';
 import { appendFilters, type ArchiveFilters } from '../archive/archive-explorer';
 
-type Props = { initialActive: PageResult<ReviewSummary>; initialArchived: PageResult<ReviewSummary> };
+type Props = {
+  initialActive: PageResult<ReviewSummary>;
+  initialArchived: PageResult<ReviewSummary>;
+  reviewsApiPath: string;
+  archiveApiPath: string;
+  restoreApiPath: string;
+};
 type Counts = { reviewCount: number; revisionCount: number; issueCount: number; openIssueCount: number };
 
-export default function ArchiveManager({ initialActive, initialArchived }: Props) {
+export default function ArchiveManager({
+  initialActive,
+  initialArchived,
+  reviewsApiPath,
+  archiveApiPath,
+  restoreApiPath,
+}: Props) {
   const [active, setActive] = useState(initialActive.items);
   const [archived, setArchived] = useState(initialArchived.items);
   const [selected, setSelected] = useState<number[]>([]);
@@ -36,7 +48,7 @@ export default function ArchiveManager({ initialActive, initialArchived }: Props
 
   async function fetchPage(scope: 'active' | 'archived', values: ArchiveFilters) {
     const params = new URLSearchParams({ scope }); appendFilters(params, values);
-    const response = await fetch('/api/reviews?' + params.toString());
+    const response = await fetch(`${reviewsApiPath}?${params.toString()}`);
     if (!response.ok) throw new Error();
     return await response.json() as PageResult<ReviewSummary>;
   }
@@ -45,7 +57,7 @@ export default function ArchiveManager({ initialActive, initialArchived }: Props
     setBusy(true); setError(''); setMessage('');
     const body = mode === 'ids' ? { mode: 'preview', ids: selected } : { mode: 'preview', filters: appliedFilters };
     try {
-      const response = await fetch('/api/reviews/archive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const response = await fetch(archiveApiPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const result = await response.json() as Counts & { previewToken?: string; error?: string };
       if (!response.ok) throw new Error(result.error ?? '预览失败。');
       setCounts(result); setPreviewToken(result.previewToken ?? '');
@@ -57,7 +69,7 @@ export default function ArchiveManager({ initialActive, initialArchived }: Props
     if (!previewToken) return;
     setBusy(true); setError('');
     try {
-      const response = await fetch('/api/reviews/archive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'confirm', previewToken }) });
+      const response = await fetch(archiveApiPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'confirm', previewToken }) });
       const result = await response.json() as { archivedCount?: number; error?: string };
       if (!response.ok) throw new Error(result.error ?? '归档失败。');
       await refreshLists();
@@ -70,7 +82,7 @@ export default function ArchiveManager({ initialActive, initialArchived }: Props
   async function restore(id: number) {
     setBusy(true); setError('');
     try {
-      const response = await fetch('/api/reviews/restore', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
+      const response = await fetch(restoreApiPath, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
       const result = await response.json() as { restoredCount?: number; error?: string };
       if (!response.ok) throw new Error(result.error ?? '恢复失败。');
       await refreshLists();

@@ -66,14 +66,12 @@ export default async function ProjectHome({ params }: Props) {
             <a href={`${basePath}/archive`} className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
               归档库
             </a>
-            {project.slug === 'zherp' && (
-              <a
-                href={`${basePath}/admin`}
-                className="rounded-lg border border-[#b9cbbb] bg-white px-3 py-2 font-medium text-[#1d5b46] hover:bg-[#edf4ee]"
-              >
-                日志管理
-              </a>
-            )}
+            <a
+              href={`${basePath}/admin`}
+              className="rounded-lg border border-[#b9cbbb] bg-white px-3 py-2 font-medium text-[#1d5b46] hover:bg-[#edf4ee]"
+            >
+              日志管理
+            </a>
           </nav>
         </div>
       </header>

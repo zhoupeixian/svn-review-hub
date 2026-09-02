@@ -55,7 +55,7 @@ export default async function ProjectArchivePage({ params, searchParams }: Props
           filters={filters}
           projectBasePath={basePath}
           reviewsApiPath={`/api/projects/${project.slug}/reviews`}
-          reviewsExportPath={project.slug === 'zherp' ? '/api/reviews/export' : null}
+          reviewsExportPath={`/api/projects/${project.slug}/reviews/export`}
         />
       </div>
     </main>

@@ -1,4 +1,5 @@
 import { parseReviewFilters } from '@/lib/review-filters';
+import { handleEnabledReviewProject } from '@/lib/project-api';
 import { getEnabledReviewProject, getReviewPage } from '@/lib/reviews';
 
 type Context = {
@@ -20,4 +21,11 @@ export async function GET(request: Request, { params }: Context) {
       { status: 400 },
     );
   }
+}
+
+export async function POST(request: Request, { params }: Context) {
+  return handleEnabledReviewProject(params, async (project) => {
+    const { uploadReviewForProject } = await import('@/lib/project-review-upload');
+    return uploadReviewForProject(request, project);
+  });
 }
