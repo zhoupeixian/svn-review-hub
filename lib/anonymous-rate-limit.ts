@@ -5,7 +5,10 @@ const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS = 10;
 const ANONYMOUS_BUCKET = 'anonymous';
 
-type RuntimeEnv = { DB: D1Database };
+type RuntimeEnv = {
+  DB: D1Database;
+  ANONYMOUS_SOURCE_HASH_KEY: string;
+};
 
 function getDb(): D1Database {
   const db = (env as unknown as RuntimeEnv).DB;
@@ -13,22 +16,45 @@ function getDb(): D1Database {
   return db;
 }
 
-async function hashClient(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(value),
+export async function hashAnonymousSource(secret: string, value: string): Promise<string> {
+  if (secret.length < 32) {
+    throw new Error('匿名来源摘要密钥未配置或长度不足。');
+  }
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const digest = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(value),
   );
   return [...new Uint8Array(digest)]
     .map((part) => part.toString(16).padStart(2, '0'))
     .join('');
 }
 
-/** D1 only receives a one-way client hash and a short-lived counter. */
-export async function allowAnonymousUpdate(request: Request): Promise<boolean> {
+type AnonymousUpdateResult = {
+  allowed: boolean;
+  sourceHash: string;
+};
+
+/** D1 only receives a project-bound one-way source hash and a short-lived counter. */
+export async function consumeAnonymousUpdate(
+  projectId: number,
+  request: Request,
+): Promise<AnonymousUpdateResult> {
   await ensureReviewSchema();
+  const runtime = env as unknown as RuntimeEnv;
   const db = getDb();
-  const clientHash = await hashClient(
-    request.headers.get('CF-Connecting-IP') || ANONYMOUS_BUCKET,
+  const hashKey = runtime.ANONYMOUS_SOURCE_HASH_KEY;
+  const anonymousSourceHash = await hashAnonymousSource(
+    typeof hashKey === 'string' ? hashKey : '',
+    `${projectId}:${request.headers.get('CF-Connecting-IP') || ANONYMOUS_BUCKET}`,
   );
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
@@ -43,15 +69,18 @@ export async function allowAnonymousUpdate(request: Request): Promise<boolean> {
     .prepare(
       'INSERT OR IGNORE INTO anonymous_update_limits (client_hash, window_started_at, request_count) VALUES (?, ?, 0)',
     )
-    .bind(clientHash, nowIso)
+    .bind(anonymousSourceHash, nowIso)
     .run();
   const updated = await db
     .prepare(
       'UPDATE anonymous_update_limits SET request_count = request_count + 1 WHERE client_hash = ? AND request_count < ?',
     )
-    .bind(clientHash, MAX_REQUESTS)
+    .bind(anonymousSourceHash, MAX_REQUESTS)
     .run();
-  return Number(updated.meta.changes ?? 0) === 1;
+  return {
+    allowed: Number(updated.meta.changes ?? 0) === 1,
+    sourceHash: anonymousSourceHash,
+  };
 }
 
 export const ANONYMOUS_UPDATE_WINDOW_MS = WINDOW_MS;

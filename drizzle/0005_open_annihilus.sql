@@ -1,0 +1,1 @@
+ALTER TABLE `review_issue_events` ADD `anonymous_source_hash` text;

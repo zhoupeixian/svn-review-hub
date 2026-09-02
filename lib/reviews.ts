@@ -412,6 +412,7 @@ function reviewIssueEventsTableSql(
     'to_status TEXT NOT NULL,',
     'note TEXT NOT NULL,',
     'created_at TEXT NOT NULL,',
+    'anonymous_source_hash TEXT,',
     'FOREIGN KEY(issue_id) REFERENCES review_issues(id) ON DELETE CASCADE',
     ')',
   ].join(' ');
@@ -460,10 +461,11 @@ export async function ensureReviewSchema(): Promise<void> {
       .bind(DEFAULT_REVIEW_PROJECT_ID, DEFAULT_REVIEW_PROJECT_SLUG)
       .run();
 
-    const [projectColumns, logColumns, issueColumns] = await Promise.all([
+    const [projectColumns, logColumns, issueColumns, eventColumns] = await Promise.all([
       DB.prepare('PRAGMA table_info(review_projects)').all<SchemaColumn>(),
       DB.prepare('PRAGMA table_info(review_logs)').all<SchemaColumn>(),
       DB.prepare('PRAGMA table_info(review_issues)').all<SchemaColumn>(),
+      DB.prepare('PRAGMA table_info(review_issue_events)').all<SchemaColumn>(),
     ]);
     const projectColumnNames = new Set(
       (projectColumns.results ?? []).map((column) => column.name),
@@ -473,6 +475,9 @@ export async function ensureReviewSchema(): Promise<void> {
     );
     const issueColumnNames = new Set(
       (issueColumns.results ?? []).map((column) => column.name),
+    );
+    const eventColumnNames = new Set(
+      (eventColumns.results ?? []).map((column) => column.name),
     );
     const needsProjectMigration = !logColumnNames.has('project_id');
     const upgrades: string[] = [];
@@ -506,6 +511,14 @@ export async function ensureReviewSchema(): Promise<void> {
     if (!issueColumnNames.has('version')) {
       upgrades.push(
         'ALTER TABLE review_issues ADD COLUMN version INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (
+      eventColumnNames.size > 0 &&
+      !eventColumnNames.has('anonymous_source_hash')
+    ) {
+      upgrades.push(
+        'ALTER TABLE review_issue_events ADD COLUMN anonymous_source_hash TEXT',
       );
     }
     if (upgrades.length) {
@@ -673,9 +686,11 @@ async function rebuildReviewStorageWithProject(DB: D1Database): Promise<void> {
     DB.prepare(reviewIssueEventsTableSql('review_issue_events')),
     DB.prepare(
       `INSERT INTO review_issue_events (
-         id, issue_id, from_status, to_status, note, created_at
+         id, issue_id, from_status, to_status, note, created_at,
+         anonymous_source_hash
        )
-       SELECT id, issue_id, from_status, to_status, note, created_at
+       SELECT id, issue_id, from_status, to_status, note, created_at,
+              anonymous_source_hash
        FROM ${eventBackup}`,
     ),
     DB.prepare(`DROP TABLE ${revisionBackup}`),

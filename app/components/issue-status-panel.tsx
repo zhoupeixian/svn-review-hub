@@ -12,7 +12,15 @@ export type EditableIssue = {
   events?: Array<{ id: number; fromStatus: IssueStatus | null; toStatus: IssueStatus; note: string; createdAt: string }>;
 };
 
-export default function IssueStatusPanel({ issue, readOnly = false }: { issue: EditableIssue; readOnly?: boolean }) {
+export default function IssueStatusPanel({
+  issue,
+  statusApiPath,
+  readOnly = false,
+}: {
+  issue: EditableIssue;
+  statusApiPath: string;
+  readOnly?: boolean;
+}) {
   const [current, setCurrent] = useState(issue);
   const [status, setStatus] = useState<IssueStatus>(issue.status);
   const [note, setNote] = useState(issue.statusNote ?? '');
@@ -25,7 +33,7 @@ export default function IssueStatusPanel({ issue, readOnly = false }: { issue: E
     event.preventDefault();
     setSaving(true); setMessage(''); setConflict(false);
     try {
-      const response = await fetch(`/api/issues/${issue.id}/status`, {
+      const response = await fetch(statusApiPath, {
         method: 'PATCH', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ status, note, version: current.version }),
       });

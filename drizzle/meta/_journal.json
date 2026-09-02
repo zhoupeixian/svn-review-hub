@@ -36,6 +36,13 @@
       "when": 1788191353492,
       "tag": "0004_melted_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788236207991,
+      "tag": "0005_open_annihilus",
+      "breakpoints": true
     }
   ]
 }

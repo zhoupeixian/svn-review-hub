@@ -548,6 +548,7 @@ describe.sequential('审查生命周期 D1 schema', () => {
         'to_status',
         'note',
         'created_at',
+        'anonymous_source_hash',
       ]),
     );
     expect(await tableColumns('anonymous_update_limits')).toEqual([
@@ -637,9 +638,11 @@ describe.sequential('审查生命周期 D1 schema', () => {
       sourceCurrent: number;
       version: number;
     }>();
-    const eventCount = await DB.prepare(
-      'SELECT COUNT(*) AS count FROM review_issue_events WHERE id = 20',
-    ).first<{ count: number }>();
+    const preservedEvent = await DB.prepare(
+      `SELECT COUNT(*) AS count,
+              anonymous_source_hash AS anonymousSourceHash
+       FROM review_issue_events WHERE id = 20`,
+    ).first<{ count: number; anonymousSourceHash: string | null }>();
     const preservedSearchRow = await DB.prepare(
       'SELECT title FROM review_search WHERE rowid = 999',
     ).first<{ title: string }>();
@@ -663,7 +666,10 @@ describe.sequential('审查生命周期 D1 schema', () => {
         version: 4,
       },
     ]);
-    expect(eventCount?.count).toBe(1);
+    expect(preservedEvent).toEqual({
+      count: 1,
+      anonymousSourceHash: null,
+    });
     expect(preservedSearchRow?.title).toBe('保留索引行');
   });
 

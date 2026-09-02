@@ -151,6 +151,7 @@ export const reviewIssueEvents = sqliteTable(
     toStatus: text('to_status').notNull(),
     note: text('note').notNull(),
     createdAt: text('created_at').notNull(),
+    anonymousSourceHash: text('anonymous_source_hash'),
   },
   (table) => [
     index('idx_review_issue_events_issue_created').on(
