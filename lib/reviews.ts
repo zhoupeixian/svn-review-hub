@@ -159,6 +159,10 @@ export type ReviewProjectIdentity = {
   slug: string;
 };
 
+export function isValidReviewProjectSlug(value: string): boolean {
+  return /^[a-z0-9-]+$/.test(value);
+}
+
 const schemaReady = new WeakMap<D1Database, Promise<void>>();
 
 type SchemaColumn = {
@@ -835,10 +839,12 @@ export async function getReviewSummaries(
 export async function getEnabledReviewProject(
   slug: string,
 ): Promise<ReviewProject | null> {
+  const normalizedSlug = slug.trim().toLowerCase();
+  if (!isValidReviewProjectSlug(normalizedSlug)) return null;
   const project = await first<Omit<ReviewProject, 'enabled'> & { enabled: number }>(
     `SELECT id, name, slug, description, display_order AS displayOrder, enabled
      FROM review_projects WHERE slug = ? AND enabled = 1`,
-    [slug.trim().toLowerCase()],
+    [normalizedSlug],
   );
   return project ? { ...project, enabled: project.enabled === 1 } : null;
 }
@@ -1005,7 +1011,6 @@ export async function getIssueExportRows(
   project: ReviewProjectIdentity,
   filters: IssueListFilters = {},
 ): Promise<ReviewExportRow[]> {
-  const projectUrlSlug = encodeURIComponent(project.slug);
   const items = await collectIssuePageItems(project.id, filters);
   if (!items.length) return [];
   const rows = await all<IssueExportRowDb>([
@@ -1032,7 +1037,7 @@ export async function getIssueExportRows(
       author: row.author,
       logDate: row.logDate,
       sourceName: row.sourceName,
-      detailUrl: `/projects/${projectUrlSlug}/reviews/${row.reviewId}#issue-${row.id}`,
+      detailUrl: `/projects/${project.slug}/reviews/${row.reviewId}#issue-${row.id}`,
     }];
   });
 }
@@ -1041,7 +1046,6 @@ export async function getReviewExportRows(
   project: ReviewProjectIdentity,
   filters: ReviewListFilters = {},
 ): Promise<ReviewExportRow[]> {
-  const projectUrlSlug = encodeURIComponent(project.slug);
   const items: ReviewSummary[] = [];
   let cursor = filters.cursor;
   while (items.length < EXPORT_MAX_ROWS) {
@@ -1075,7 +1079,7 @@ export async function getReviewExportRows(
         issueKey: '', status: '', statusNote: '', updatedAt: review.updatedAt,
         severity: '', title: review.title, revision: '', author: '',
         logDate: review.logDate, sourceName: review.sourceName,
-        detailUrl: `/projects/${projectUrlSlug}/reviews/${review.id}`,
+        detailUrl: `/projects/${project.slug}/reviews/${review.id}`,
       }];
     }
     return reviewRows.map((row) => ({
@@ -1090,8 +1094,8 @@ export async function getReviewExportRows(
       logDate: row.logDate,
       sourceName: row.sourceName,
       detailUrl: row.id
-        ? `/projects/${projectUrlSlug}/reviews/${row.reviewId}#issue-${row.id}`
-        : `/projects/${projectUrlSlug}/reviews/${row.reviewId}`,
+        ? `/projects/${project.slug}/reviews/${row.reviewId}#issue-${row.id}`
+        : `/projects/${project.slug}/reviews/${row.reviewId}`,
     }));
   }).slice(0, EXPORT_MAX_ROWS);
 }
@@ -1160,7 +1164,7 @@ function protectSpreadsheetText(value: string): string {
 }
 
 function safeDetailUrl(path: string, origin: string): string {
-  if (!/^\/projects\/(?:[A-Za-z0-9._~!*'()-]|%[0-9A-F]{2})+\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
+  if (!/^\/projects\/[a-z0-9-]+\/reviews\/\d+(?:#issue-\d+)?$/.test(path)) {
     throw new Error('导出详情链接无效。');
   }
   return new URL(path, origin).toString();

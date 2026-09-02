@@ -140,32 +140,21 @@ describe.sequential('按审查项目管理日志', () => {
     expect(await archivedAt(haihuaId)).toBeNull();
   });
 
-  it.each([
-    { slug: 'hai_hua', urlSlug: 'hai_hua' },
-    { slug: 'team.v2', urlSlug: 'team.v2' },
-    { slug: 'team\\v2', urlSlug: 'team%5Cv2' },
-  ])('问题导出安全编码项目 slug $slug', async ({ slug, urlSlug }) => {
-    await DB.prepare(
-      `UPDATE review_projects SET slug = ? WHERE id = 2`,
-    ).bind(slug).run();
-    await uploadProjectReview(uploadRequest(), {
-      params: Promise.resolve({ slug }),
-    });
-    const reviewRecordId = await reviewId(slug);
-    const currentIssueId = await issueId(slug);
+  it.each(['hai_hua', 'team.v2', 'team\\v2'])(
+    '项目 API 拒绝非法项目标识 %s',
+    async (slug) => {
+      await DB.prepare(
+        `UPDATE review_projects SET slug = ? WHERE id = 2`,
+      ).bind(slug).run();
 
-    const response = await exportProjectIssues(
-      new Request(`https://review.test/api/projects/${slug}/issues/export`),
-      { params: Promise.resolve({ slug }) },
-    );
+      const response = await exportProjectIssues(
+        new Request(`https://review.test/api/projects/${slug}/issues/export`),
+        { params: Promise.resolve({ slug }) },
+      );
 
-    expect(response.status).toBe(200);
-    const workbook = XLSX.read(await response.arrayBuffer(), { type: 'array' });
-    const sheet = workbook.Sheets['问题跟进'];
-    expect(sheet.J2.l?.Target).toBe(
-      `https://review.test/projects/${urlSlug}/reviews/${reviewRecordId}#issue-${currentIssueId}`,
-    );
-  });
+      expect(response.status).toBe(404);
+    },
+  );
 
   it('导出和原始日志下载只返回当前项目并在文件名与链接中包含项目标识', async () => {
     await uploadProjectReview(uploadRequest(), {
