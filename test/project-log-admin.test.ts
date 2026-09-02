@@ -140,14 +140,18 @@ describe.sequential('按审查项目管理日志', () => {
     expect(await archivedAt(haihuaId)).toBeNull();
   });
 
-  it.each(['hai_hua', 'team.v2'])('问题导出支持项目 slug %s', async (slug) => {
+  it.each([
+    { slug: 'hai_hua', urlSlug: 'hai_hua' },
+    { slug: 'team.v2', urlSlug: 'team.v2' },
+    { slug: 'team\\v2', urlSlug: 'team%5Cv2' },
+  ])('问题导出安全编码项目 slug $slug', async ({ slug, urlSlug }) => {
     await DB.prepare(
       `UPDATE review_projects SET slug = ? WHERE id = 2`,
     ).bind(slug).run();
     await uploadProjectReview(uploadRequest(), {
       params: Promise.resolve({ slug }),
     });
-    const reviewId = await reviewId(slug);
+    const reviewRecordId = await reviewId(slug);
     const currentIssueId = await issueId(slug);
 
     const response = await exportProjectIssues(
@@ -159,7 +163,7 @@ describe.sequential('按审查项目管理日志', () => {
     const workbook = XLSX.read(await response.arrayBuffer(), { type: 'array' });
     const sheet = workbook.Sheets['问题跟进'];
     expect(sheet.J2.l?.Target).toBe(
-      `https://review.test/projects/${slug}/reviews/${reviewId}#issue-${currentIssueId}`,
+      `https://review.test/projects/${urlSlug}/reviews/${reviewRecordId}#issue-${currentIssueId}`,
     );
   });
 
