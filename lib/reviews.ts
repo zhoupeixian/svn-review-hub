@@ -1676,27 +1676,39 @@ export async function ingestReviewForProject(
   const sourceName = input.sourceName.trim().slice(0, 255) || 'svn审查日志.md';
   const now = new Date().toISOString();
   const sourceHash = await sha256(markdown);
-  const contentObjectKey =
-    'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' +
-    sourceHash + '-' + crypto.randomUUID() + '.md';
   const { DB, FILES } = getRuntime();
   const projectId = storedProject.id;
-
-  await FILES.put(contentObjectKey, markdown, {
-    httpMetadata: {
-      contentType: 'text/markdown; charset=utf-8',
-    },
-    customMetadata: {
-      projectSlug: storedProject.slug,
-      logDate: parsed.logDate,
-      sourceName,
-    },
-  });
-
-  const existing = await first<{ id: number }>(
-    'SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?',
+  const existing = await first<{
+    id: number;
+    sourceHash: string;
+    contentObjectKey: string;
+  }>(
+    `SELECT id, source_hash AS sourceHash, content_object_key AS contentObjectKey
+     FROM review_logs WHERE project_id = ? AND source_key = ?`,
     [projectId, sourceKey],
   );
+  const reusableObject = existing?.sourceHash === sourceHash
+    ? await FILES.head(existing.contentObjectKey)
+    : null;
+  const contentObjectKey = reusableObject
+    ? existing!.contentObjectKey
+    : 'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' +
+      sourceHash + '-' + crypto.randomUUID() + '.md';
+  const createdContentObject = !reusableObject;
+
+  if (createdContentObject) {
+    await FILES.put(contentObjectKey, markdown, {
+      httpMetadata: {
+        contentType: 'text/markdown; charset=utf-8',
+      },
+      customMetadata: {
+        projectSlug: storedProject.slug,
+        logDate: parsed.logDate,
+        sourceName,
+      },
+    });
+  }
+
   const existingIssues = existing
     ? await all<IssueIdentityRow>(
         `SELECT id, review_id AS reviewId, issue_key AS issueKey,
@@ -1753,6 +1765,7 @@ export async function ingestReviewForProject(
         'p1_count = excluded.p1_count, p2_count = excluded.p2_count,',
         'p3_count = excluded.p3_count, sync_mode = excluded.sync_mode,',
         'imported_by = excluded.imported_by, updated_at = excluded.updated_at',
+        'WHERE review_logs.content_object_key = ?',
       ].join(' '),
     ).bind(
       projectId,
@@ -1776,17 +1789,20 @@ export async function ingestReviewForProject(
       now,
       projectId,
       storedProject.slug,
+      existing?.contentObjectKey ?? null,
     ),
     DB.prepare(
       `DELETE FROM review_revisions
-       WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)
+       WHERE review_id = (SELECT id FROM review_logs
+                          WHERE project_id = ? AND source_key = ? AND content_object_key = ?)
          AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
-    ).bind(projectId, sourceKey, projectId),
+    ).bind(projectId, sourceKey, contentObjectKey, projectId),
     DB.prepare(
       `UPDATE review_issues SET source_current = 0
-       WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)
+       WHERE review_id = (SELECT id FROM review_logs
+                          WHERE project_id = ? AND source_key = ? AND content_object_key = ?)
          AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
-    ).bind(projectId, sourceKey, projectId),
+    ).bind(projectId, sourceKey, contentObjectKey, projectId),
     ...parsed.revisions.map((revision) =>
       DB.prepare(
         [
@@ -1794,7 +1810,8 @@ export async function ingestReviewForProject(
           'review_id, revision, author, committed_at, description, conclusion',
           ') SELECT l.id, ?, ?, ?, ?, ? FROM review_logs l',
           'JOIN review_projects p ON p.id = l.project_id',
-          'WHERE l.project_id = ? AND l.source_key = ? AND p.enabled = 1',
+          'WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?',
+          'AND p.enabled = 1',
         ].join(' '),
       ).bind(
         revision.revision,
@@ -1804,6 +1821,7 @@ export async function ingestReviewForProject(
         revision.conclusion,
         projectId,
         sourceKey,
+        contentObjectKey,
       ),
     ),
     ...currentIssues.map(([issueKey, issue]) =>
@@ -1814,7 +1832,8 @@ export async function ingestReviewForProject(
           'status, status_note, status_updated_at, source_current, version',
           ") SELECT l.id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
           'FROM review_logs l JOIN review_projects p ON p.id = l.project_id',
-          'WHERE l.project_id = ? AND l.source_key = ? AND p.enabled = 1',
+          'WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?',
+          'AND p.enabled = 1',
           'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
           'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
           'related_revisions = excluded.related_revisions, detail = excluded.detail,',
@@ -1828,17 +1847,24 @@ export async function ingestReviewForProject(
         issue.detail,
         projectId,
         sourceKey,
+        contentObjectKey,
       ),
     ),
     DB.prepare(
-      'SELECT id FROM review_projects WHERE id = ? AND slug = ? AND enabled = 1',
-    ).bind(projectId, storedProject.slug),
+      `SELECT l.id FROM review_logs l
+       JOIN review_projects p ON p.id = l.project_id
+       WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?
+         AND p.slug = ? AND p.enabled = 1`,
+    ).bind(projectId, sourceKey, contentObjectKey, storedProject.slug),
   ];
 
   let results: D1Result[];
   try {
     results = await DB.batch(statements);
   } catch (error) {
+    if (createdContentObject) {
+      await FILES.delete(contentObjectKey);
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `D1 原子更新失败，未提交部分结构化变更：${message}`,
@@ -1846,16 +1872,24 @@ export async function ingestReviewForProject(
     );
   }
   if (!results.at(-1)?.results?.length) {
-    await FILES.delete(contentObjectKey);
-    throw new Error('审查项目已停用，日志未写入。');
+    if (createdContentObject) {
+      await FILES.delete(contentObjectKey);
+    }
+    throw new Error('审查项目已停用或同一来源已被并发更新，日志未写入。');
   }
 
-  const identity = await first<{ id: number }>(
-    'SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?',
-    [projectId, sourceKey],
-  );
-  if (!identity) throw new Error('日志已写入，但未能读取导入标识。');
-  const reviewId = identity.id;
+  const committedIdentity = results.at(-1)!.results[0] as { id: number };
+  const reviewId = committedIdentity.id;
+
+  if (existing && existing.contentObjectKey !== contentObjectKey) {
+    const remainingReference = await first<{ found: number }>(
+      'SELECT 1 AS found FROM review_logs WHERE content_object_key = ? LIMIT 1',
+      [existing.contentObjectKey],
+    );
+    if (!remainingReference) {
+      await FILES.delete(existing.contentObjectKey);
+    }
+  }
 
   const review = await first<ReviewSummary>(
     [
