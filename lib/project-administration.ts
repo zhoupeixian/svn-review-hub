@@ -362,11 +362,7 @@ export async function copyAdminProjectSyncKey(
     syncKey = await decryptProjectSyncKey(stored, stored.syncKeyEncrypted);
   } catch {
     const project = await adminProject(stored);
-    const error = new ProjectAdminError(
-      '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
-      'project_sync_key_unavailable',
-      409,
-    );
+    const error = projectSyncKeyUnavailableError();
     await writeAudit(user, {
       project,
       snapshot: project,
@@ -409,7 +405,21 @@ export async function rotateAdminProjectSyncKey(
 ): Promise<AdminProject> {
   await ensureReviewSchema();
   const stored = await requireStoredProject(user, projectId, 'project.sync-key.rotate');
-  const syncKeyEncrypted = await encryptProjectSyncKey(stored, generateProjectSyncKey());
+  let syncKeyEncrypted: string;
+  try {
+    syncKeyEncrypted = await encryptProjectSyncKey(stored, generateProjectSyncKey());
+  } catch {
+    const project = await adminProject(stored);
+    const error = projectSyncKeyUnavailableError();
+    await writeAudit(user, {
+      project,
+      snapshot: project,
+      action: 'project.sync-key.rotate',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
   const createdAt = new Date().toISOString();
   const results = await db().batch([
     db().prepare(
@@ -789,7 +799,20 @@ async function requireStoredProject(
     throw error;
   }
   if (!project.syncKeyEncrypted) {
-    await provisionProjectSyncKeys([project]);
+    try {
+      await provisionProjectSyncKeys([project]);
+    } catch {
+      const safeProject = await adminProject(project);
+      const error = projectSyncKeyUnavailableError();
+      await writeAudit(user, {
+        project: safeProject,
+        snapshot: safeProject,
+        action,
+        result: 'failure',
+        failureCode: error.code,
+      });
+      throw error;
+    }
     project = await db().prepare(
       `${projectSelect()} WHERE id = ?`,
     ).bind(projectId).first<StoredProject>();
@@ -798,6 +821,14 @@ async function requireStoredProject(
     throw new Error('项目同步密钥未能生成。');
   }
   return project as StoredProject & { syncKeyEncrypted: string };
+}
+
+function projectSyncKeyUnavailableError(): ProjectAdminError {
+  return new ProjectAdminError(
+    '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+    'project_sync_key_unavailable',
+    409,
+  );
 }
 
 function auditProjectSelectStatement(

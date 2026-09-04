@@ -203,6 +203,52 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     expect(JSON.stringify(copyAudit)).not.toContain('无法解密');
   });
 
+  it('复制时缺失密钥且主密钥无效仍写入不泄密的失败审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    await DB.prepare('UPDATE review_projects SET sync_key_encrypted = NULL WHERE id = ?')
+      .bind(projectId).run();
+    runtime.REVIEW_SYNC_MASTER_KEY = 'invalid-master-key';
+    let response: Response;
+    try {
+      response = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+        params: Promise.resolve({ id: String(projectId) }),
+      });
+    } finally {
+      runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
+    }
+
+    expect(response!.status).toBe(409);
+    expect(await response!.json()).toEqual({
+      error: '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      code: 'project_sync_key_unavailable',
+    });
+    const audit = (await audits()).find((entry) => entry.action === 'project.sync-key.copy');
+    expect(audit).toMatchObject({ result: 'failure', failureCode: 'project_sync_key_unavailable' });
+    expect(JSON.stringify(audit)).not.toContain('invalid-master-key');
+  });
+
+  it('轮换时主密钥无效仍写入不泄密的失败审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    runtime.REVIEW_SYNC_MASTER_KEY = 'invalid-master-key';
+    let response: Response;
+    try {
+      response = await rotateProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+        params: Promise.resolve({ id: String(projectId) }),
+      });
+    } finally {
+      runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
+    }
+
+    expect(response!.status).toBe(409);
+    expect(await response!.json()).toEqual({
+      error: '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      code: 'project_sync_key_unavailable',
+    });
+    const audit = (await audits()).find((entry) => entry.action === 'project.sync-key.rotate');
+    expect(audit).toMatchObject({ result: 'failure', failureCode: 'project_sync_key_unavailable' });
+    expect(JSON.stringify(audit)).not.toContain('invalid-master-key');
+  });
+
   it('轮换后旧密钥立即失效，新密钥只可通过再次复制取得', async () => {
     const projectId = await createProjectAndId('海华项目', 'haihua', 10);
     const copiedBefore = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
