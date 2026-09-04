@@ -186,12 +186,20 @@ function getRuntime(): RuntimeEnv {
   return runtime;
 }
 
-const SYNC_KEY_ENVELOPE_VERSION = 'v1';
-const SYNC_KEY_AAD_PREFIX = 'review-project-sync-key:v1';
+const LEGACY_SYNC_KEY_ENVELOPE_VERSION = 'v1';
+const SYNC_KEY_ENVELOPE_VERSION = 'v2';
 
 export async function encryptProjectSyncKey(
   project: ReviewProjectIdentity,
   plaintext: string,
+): Promise<string> {
+  return encryptProjectSyncKeyVersion(project, plaintext, SYNC_KEY_ENVELOPE_VERSION);
+}
+
+async function encryptProjectSyncKeyVersion(
+  project: ReviewProjectIdentity,
+  plaintext: string,
+  version: typeof LEGACY_SYNC_KEY_ENVELOPE_VERSION | typeof SYNC_KEY_ENVELOPE_VERSION,
 ): Promise<string> {
   if (!plaintext) throw new Error('项目同步密钥不能为空。');
   const key = await importSyncMasterKey();
@@ -200,25 +208,25 @@ export async function encryptProjectSyncKey(
     {
       name: 'AES-GCM',
       iv,
-      additionalData: syncKeyAdditionalData(project),
+      additionalData: syncKeyAdditionalData(project, version),
     },
     key,
     new TextEncoder().encode(plaintext),
   );
   return [
-    SYNC_KEY_ENVELOPE_VERSION,
+    version,
     encodeBase64(iv),
     encodeBase64(new Uint8Array(encrypted)),
   ].join('.');
 }
 
-async function decryptProjectSyncKey(
+export async function decryptProjectSyncKey(
   project: ReviewProjectIdentity,
   envelope: string,
 ): Promise<string> {
   const [version, ivValue, ciphertextValue, extra] = envelope.split('.');
   if (
-    version !== SYNC_KEY_ENVELOPE_VERSION ||
+    (version !== LEGACY_SYNC_KEY_ENVELOPE_VERSION && version !== SYNC_KEY_ENVELOPE_VERSION) ||
     !ivValue ||
     !ciphertextValue ||
     extra !== undefined
@@ -230,7 +238,7 @@ async function decryptProjectSyncKey(
       {
         name: 'AES-GCM',
         iv: decodeBase64(ivValue),
-        additionalData: syncKeyAdditionalData(project),
+        additionalData: syncKeyAdditionalData(project, version),
       },
       await importSyncMasterKey(),
       decodeBase64(ciphertextValue),
@@ -263,10 +271,24 @@ async function importSyncMasterKey(): Promise<CryptoKey> {
 
 function syncKeyAdditionalData(
   project: ReviewProjectIdentity,
+  version: typeof LEGACY_SYNC_KEY_ENVELOPE_VERSION | typeof SYNC_KEY_ENVELOPE_VERSION,
 ): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(
-    `${SYNC_KEY_AAD_PREFIX}:${project.id}:${project.slug}`,
+    version === LEGACY_SYNC_KEY_ENVELOPE_VERSION
+      ? `review-project-sync-key:v1:${project.id}:${project.slug}`
+      : `review-project-sync-key:v2:${project.slug}`,
   );
+}
+
+export function generateProjectSyncKey(): string {
+  return encodeBase64(crypto.getRandomValues(new Uint8Array(32)))
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
+}
+
+export function maskProjectSyncKey(value: string): string {
+  return value.length > 7 ? `${value.slice(0, 3)}***${value.slice(-4)}` : '***';
 }
 
 function encodeBase64(value: Uint8Array): string {
@@ -293,7 +315,11 @@ async function ensureLegacySyncKeyMigrated(DB: D1Database): Promise<void> {
     .first<ReviewProjectIdentity & { syncKeyEncrypted: string | null }>();
   if (!project || project.syncKeyEncrypted) return;
 
-  const encrypted = await encryptProjectSyncKey(project, legacyKey);
+  const encrypted = await encryptProjectSyncKeyVersion(
+    project,
+    legacyKey,
+    LEGACY_SYNC_KEY_ENVELOPE_VERSION,
+  );
   await DB.prepare(
     `UPDATE review_projects SET sync_key_encrypted = ?, updated_at = ?
      WHERE id = ? AND sync_key_encrypted IS NULL`,

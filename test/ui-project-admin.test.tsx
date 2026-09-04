@@ -13,6 +13,7 @@ const projects = [
     description: 'ERP 主项目',
     displayOrder: 0,
     enabled: true,
+    syncKeyMasked: 'abc***wxyz',
     createdAt: '2026-09-01T00:00:00.000Z',
     updatedAt: '2026-09-01T00:00:00.000Z',
   },
@@ -23,6 +24,7 @@ const projects = [
     description: '海华专项',
     displayOrder: 10,
     enabled: true,
+    syncKeyMasked: 'def***stuv',
     createdAt: '2026-09-01T00:00:00.000Z',
     updatedAt: '2026-09-01T00:00:00.000Z',
   },
@@ -151,6 +153,35 @@ describe('全局项目维护 UI', () => {
     await userEvent.click(screen.getByRole('button', { name: '恢复 海华项目' }));
     expect(await screen.findByRole('button', { name: '停用 海华项目' })).toBeTruthy();
     expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ enabled: true });
+  });
+
+  it('只展示脱敏密钥，复制时不把完整值放进页面状态，且可轮换', async () => {
+    const fullKey = 'abc012345678901234567890123456789012345wxyz';
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fetchMock = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ syncKey: fullKey, syncKeyMasked: 'abc***wxyz' }))
+      .mockResolvedValueOnce(jsonResponse({
+        project: { ...projects[0], syncKeyMasked: 'new***mask' },
+      }));
+
+    render(<ProjectAdminManager initialProjects={[projects[0]]} initialAudits={[]} />);
+
+    expect(screen.getByText('abc***wxyz')).toBeTruthy();
+    expect(screen.queryByText(fullKey)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '复制 ZHERP 同步密钥' }));
+    expect(writeText).toHaveBeenCalledWith(fullKey);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/projects/1/sync-key/copy');
+    expect(screen.queryByText(fullKey)).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: '轮换 ZHERP 同步密钥' }));
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/admin/projects/1/sync-key/rotate');
+    expect(await screen.findByText('new***mask')).toBeTruthy();
+    expect(screen.queryByText(fullKey)).toBeNull();
   });
 
   it('同排序值项目改名后按服务端规则重排本地目录位置', async () => {

@@ -1,6 +1,12 @@
 import { env } from 'cloudflare:workers';
 import type { ChatGPTUser } from '@/app/chatgpt-auth';
-import { ensureReviewSchema } from '@/lib/reviews';
+import {
+  decryptProjectSyncKey,
+  encryptProjectSyncKey,
+  ensureReviewSchema,
+  generateProjectSyncKey,
+  maskProjectSyncKey,
+} from '@/lib/reviews';
 
 type RuntimeEnv = { DB: D1Database };
 type SqlValue = string | number | null;
@@ -11,6 +17,8 @@ export const PROJECT_ADMIN_ACTIONS = [
   'project.reorder',
   'project.disable',
   'project.restore',
+  'project.sync-key.copy',
+  'project.sync-key.rotate',
 ] as const;
 
 export type ProjectAdminAction = (typeof PROJECT_ADMIN_ACTIONS)[number];
@@ -22,6 +30,7 @@ export type AdminProject = {
   description: string;
   displayOrder: number;
   enabled: boolean;
+  syncKeyMasked: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -47,7 +56,10 @@ export type ProjectAdminAuditPage = {
   hasMore: boolean;
 };
 
-type StoredProject = Omit<AdminProject, 'enabled'> & { enabled: number };
+type StoredProject = Omit<AdminProject, 'enabled' | 'syncKeyMasked'> & {
+  enabled: number;
+  syncKeyEncrypted: string | null;
+};
 
 type AuditInput = {
   project?: Partial<AdminProject> | null;
@@ -87,18 +99,39 @@ function db(): D1Database {
   return value;
 }
 
-function adminProject(row: StoredProject): AdminProject {
-  return { ...row, enabled: row.enabled === 1 };
+async function adminProject(row: StoredProject): Promise<AdminProject> {
+  const { syncKeyEncrypted, enabled, ...project } = row;
+  let syncKeyMasked = '';
+  if (syncKeyEncrypted) {
+    try {
+      syncKeyMasked = maskProjectSyncKey(
+        await decryptProjectSyncKey(project, syncKeyEncrypted),
+      );
+    } catch {
+      syncKeyMasked = '不可用';
+    }
+  }
+  return {
+    ...project,
+    enabled: enabled === 1,
+    syncKeyMasked,
+  };
 }
 
 function projectSelect(): string {
   return `SELECT id, name, slug, description, display_order AS displayOrder,
-                 enabled, created_at AS createdAt, updated_at AS updatedAt
+                 enabled, sync_key_encrypted AS syncKeyEncrypted,
+                 created_at AS createdAt, updated_at AS updatedAt
           FROM review_projects`;
 }
 
 async function firstProject(statement: string, values: SqlValue[] = []): Promise<AdminProject | null> {
-  const row = await db().prepare(statement).bind(...values).first<StoredProject>();
+  let row = await db().prepare(statement).bind(...values).first<StoredProject>();
+  if (!row) return null;
+  if (!row.syncKeyEncrypted) {
+    await provisionProjectSyncKeys([row]);
+    row = await db().prepare(statement).bind(...values).first<StoredProject>();
+  }
   return row ? adminProject(row) : null;
 }
 
@@ -107,7 +140,15 @@ export async function listAdminProjects(): Promise<AdminProject[]> {
   const result = await db().prepare(
     `${projectSelect()} ORDER BY display_order, name COLLATE NOCASE, id`,
   ).all<StoredProject>();
-  return (result.results ?? []).map(adminProject);
+  let rows = result.results ?? [];
+  const missing = rows.filter((row) => !row.syncKeyEncrypted);
+  if (missing.length) {
+    await provisionProjectSyncKeys(missing);
+    rows = (await db().prepare(
+      `${projectSelect()} ORDER BY display_order, name COLLATE NOCASE, id`,
+    ).all<StoredProject>()).results ?? [];
+  }
+  return Promise.all(rows.map(adminProject));
 }
 
 export async function createAdminProject(
@@ -131,18 +172,25 @@ export async function createAdminProject(
     throw businessError;
   }
 
+  const syncKey = generateProjectSyncKey();
+  const syncKeyEncrypted = await encryptProjectSyncKey(
+    { id: 0, slug: candidate.slug },
+    syncKey,
+  );
   const now = new Date().toISOString();
   try {
     await db().batch([
       db().prepare(
         `INSERT INTO review_projects
-           (name, slug, description, display_order, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 1, ?, ?)`,
+           (name, slug, description, display_order, enabled, sync_key_encrypted,
+            created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
       ).bind(
         candidate.name,
         candidate.slug,
         candidate.description,
         candidate.displayOrder,
+        syncKeyEncrypted,
         now,
         now,
       ),
@@ -300,6 +348,104 @@ export async function setAdminProjectEnabled(
   }
   const updated = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
   if (!updated) throw new Error('项目状态已更新，但无法读取更新结果。');
+  return updated;
+}
+
+export async function copyAdminProjectSyncKey(
+  user: ChatGPTUser,
+  projectId: number,
+): Promise<{ syncKey: string; syncKeyMasked: string }> {
+  await ensureReviewSchema();
+  const stored = await requireStoredProject(user, projectId, 'project.sync-key.copy');
+  let syncKey: string;
+  try {
+    syncKey = await decryptProjectSyncKey(stored, stored.syncKeyEncrypted);
+  } catch {
+    const project = await adminProject(stored);
+    const error = new ProjectAdminError(
+      '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      'project_sync_key_unavailable',
+      409,
+    );
+    await writeAudit(user, {
+      project,
+      snapshot: project,
+      action: 'project.sync-key.copy',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  const createdAt = new Date().toISOString();
+  const result = await auditProjectSyncKeyStatement(
+    user,
+    'project.sync-key.copy',
+    createdAt,
+    projectId,
+    stored.syncKeyEncrypted,
+    false,
+  ).run();
+  if (Number(result.meta.changes ?? 0) !== 1) {
+    const error = new ProjectAdminError(
+      '项目同步密钥已变化，请重试复制。',
+      'project_sync_key_changed',
+      409,
+    );
+    await writeAudit(user, {
+      project: await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]) ?? { id: projectId },
+      snapshot: { id: projectId },
+      action: 'project.sync-key.copy',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  return { syncKey, syncKeyMasked: maskProjectSyncKey(syncKey) };
+}
+
+export async function rotateAdminProjectSyncKey(
+  user: ChatGPTUser,
+  projectId: number,
+): Promise<AdminProject> {
+  await ensureReviewSchema();
+  const stored = await requireStoredProject(user, projectId, 'project.sync-key.rotate');
+  const syncKeyEncrypted = await encryptProjectSyncKey(stored, generateProjectSyncKey());
+  const createdAt = new Date().toISOString();
+  const results = await db().batch([
+    db().prepare(
+      `UPDATE review_projects SET sync_key_encrypted = ?, updated_at = ?
+       WHERE id = ? AND sync_key_encrypted = ?`,
+    ).bind(syncKeyEncrypted, createdAt, projectId, stored.syncKeyEncrypted),
+    auditProjectSyncKeyStatement(
+      user,
+      'project.sync-key.rotate',
+      createdAt,
+      projectId,
+      syncKeyEncrypted,
+      true,
+    ),
+  ]);
+  if (
+    Number(results[0]?.meta.changes ?? 0) !== 1 ||
+    Number(results[1]?.meta.changes ?? 0) !== 1
+  ) {
+    const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+    const error = new ProjectAdminError(
+      '项目同步密钥已变化，请刷新后重试。',
+      'project_sync_key_changed',
+      409,
+    );
+    await writeAudit(user, {
+      project: latest ?? { id: projectId },
+      snapshot: latest ?? { id: projectId },
+      action: 'project.sync-key.rotate',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  const updated = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+  if (!updated) throw new Error('项目同步密钥已轮换，但无法读取项目。');
   return updated;
 }
 
@@ -599,6 +745,61 @@ function decodeAuditCursor(value: string): { createdAt: string; id: number } {
   }
 }
 
+async function provisionProjectSyncKeys(
+  projects: Array<Pick<StoredProject, 'id' | 'slug'>>,
+): Promise<void> {
+  if (!projects.length) return;
+  const generated = await Promise.all(projects.map(async (project) => ({
+    id: project.id,
+    ciphertext: await encryptProjectSyncKey(project, generateProjectSyncKey()),
+  })));
+  await db().prepare(
+    `WITH generated AS (
+       SELECT CAST(json_extract(value, '$.id') AS INTEGER) AS id,
+              json_extract(value, '$.ciphertext') AS ciphertext
+       FROM json_each(?)
+     )
+     UPDATE review_projects
+     SET sync_key_encrypted = (
+           SELECT ciphertext FROM generated WHERE generated.id = review_projects.id
+         ),
+         updated_at = ?
+     WHERE sync_key_encrypted IS NULL
+       AND id IN (SELECT id FROM generated)`,
+  ).bind(JSON.stringify(generated), new Date().toISOString()).run();
+}
+
+async function requireStoredProject(
+  user: ChatGPTUser,
+  projectId: number,
+  action: 'project.sync-key.copy' | 'project.sync-key.rotate',
+): Promise<StoredProject & { syncKeyEncrypted: string }> {
+  let project = await db().prepare(
+    `${projectSelect()} WHERE id = ?`,
+  ).bind(projectId).first<StoredProject>();
+  if (!project) {
+    const error = new ProjectAdminError('审查项目不存在。', 'project_not_found', 404);
+    await writeAudit(user, {
+      project: { id: projectId },
+      snapshot: { id: projectId },
+      action,
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  if (!project.syncKeyEncrypted) {
+    await provisionProjectSyncKeys([project]);
+    project = await db().prepare(
+      `${projectSelect()} WHERE id = ?`,
+    ).bind(projectId).first<StoredProject>();
+  }
+  if (!project?.syncKeyEncrypted) {
+    throw new Error('项目同步密钥未能生成。');
+  }
+  return project as StoredProject & { syncKeyEncrypted: string };
+}
+
 function auditProjectSelectStatement(
   user: ChatGPTUser,
   action: ProjectAdminAction,
@@ -627,6 +828,37 @@ function auditProjectSelectStatement(
     failureCode,
     createdAt,
     slug,
+  );
+}
+
+function auditProjectSyncKeyStatement(
+  user: ChatGPTUser,
+  action: 'project.sync-key.copy' | 'project.sync-key.rotate',
+  createdAt: string,
+  projectId: number,
+  syncKeyEncrypted: string,
+  requirePreviousChange: boolean,
+): D1PreparedStatement {
+  return db().prepare(
+    `INSERT INTO project_admin_audits
+       (project_id_snapshot, project_slug_snapshot, project_name_snapshot,
+        project_snapshot_json, admin_user_id, admin_email_snapshot,
+        admin_display_name_snapshot, action, result, failure_code, created_at)
+     SELECT id, slug, name,
+            json_object('id', id, 'name', name, 'slug', slug,
+                        'description', description, 'displayOrder', display_order,
+                        'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
+            ?, ?, ?, ?, 'success', NULL, ?
+     FROM review_projects
+     WHERE id = ? AND sync_key_encrypted = ?${requirePreviousChange ? ' AND changes() = 1' : ''}`,
+  ).bind(
+    user.userId,
+    user.email,
+    user.displayName,
+    action,
+    createdAt,
+    projectId,
+    syncKeyEncrypted,
   );
 }
 
