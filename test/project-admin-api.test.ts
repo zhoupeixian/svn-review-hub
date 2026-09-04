@@ -7,6 +7,7 @@ import { GET as getAudits } from '../app/api/admin/project-audits/route';
 import { PATCH as updateProject } from '../app/api/admin/projects/[id]/route';
 import { PUT as reorderProjects } from '../app/api/admin/projects/order/route';
 import { GET as getProjects, POST as createProject } from '../app/api/admin/projects/route';
+import { projectAdminErrorResponse } from '../lib/global-admin-api';
 import { ensureReviewSchema, getReviewProjectDirectory } from '../lib/reviews';
 
 let currentUser: ChatGPTUser | null = {
@@ -118,6 +119,7 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     [{ name: '非法项目', slug: 'hai_hua', displayOrder: 10 }, 'invalid_slug'],
     [{ name: '大小写项目', slug: 'Haihua', displayOrder: 10 }, 'invalid_slug'],
     [{ name: '空名称', slug: 'empty-name', displayOrder: -1 }, 'invalid_display_order'],
+    [{ name: '超大顺序', slug: 'unsafe-order', displayOrder: Number.MAX_SAFE_INTEGER + 1 }, 'invalid_display_order'],
   ])('明确拒绝无效创建 %j 并记录失败审计', async (body, failureCode) => {
     const response = await createProject(jsonRequest('/api/admin/projects', 'POST', body));
     const payload = await response.json() as { error: string; code: string };
@@ -203,6 +205,7 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     [[1, 1], 'duplicate_project_id'],
     [[1, 999], 'unknown_project_id'],
     [[1], 'incomplete_project_order'],
+    [[1, Number.MAX_SAFE_INTEGER + 1], 'invalid_project_id'],
   ])('拒绝无效排序 %j 且不产生部分更新', async (projectIds, failureCode) => {
     const haihua = await createProjectAndId('海华项目', 'haihua', 10);
     const before = await projectOrder();
@@ -216,7 +219,21 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     expect((await audits())[0]).toMatchObject({
       action: 'project.reorder', result: 'failure', failureCode,
     });
+    expect(JSON.parse((await audits())[0].projectSnapshot)).toMatchObject({
+      requestedProjectIds: projectIds,
+      projects: [
+        { id: 1, name: 'ZHERP', slug: 'zherp', displayOrder: 0 },
+        { id: haihua, name: '海华项目', slug: 'haihua', displayOrder: 10 },
+      ],
+    });
     expect(haihua).toBeGreaterThan(1);
+  });
+
+  it('未知基础设施错误使用通用响应，不向前端泄露内部错误原文', async () => {
+    const response = projectAdminErrorResponse(new Error('D1 private table detail'));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: '项目维护暂时不可用。' });
   });
 
   it('审计保存操作当时身份和项目快照，并支持组合筛选及稳定倒序', async () => {

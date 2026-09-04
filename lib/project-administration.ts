@@ -230,10 +230,10 @@ export async function reorderAdminProjects(
   input: unknown,
 ): Promise<AdminProject[]> {
   await ensureReviewSchema();
+  const projects = await listAdminProjects();
   let projectIds: number[];
   try {
     projectIds = parseProjectOrder(input);
-    const projects = await listAdminProjects();
     const knownIds = new Set(projects.map((project) => project.id));
     if (projectIds.some((id) => !knownIds.has(id))) {
       throw new ProjectAdminError('排序中包含不存在的项目。', 'unknown_project_id', 400);
@@ -244,7 +244,7 @@ export async function reorderAdminProjects(
   } catch (error) {
     const businessError = asProjectAdminError(error);
     await writeAudit(user, {
-      snapshot: projectOrderCandidate(input),
+      snapshot: projectOrderCandidate(input, projects),
       action: 'project.reorder',
       result: 'failure',
       failureCode: businessError.code,
@@ -354,7 +354,7 @@ function parseProjectOrder(input: unknown): number[] {
     throw new ProjectAdminError('请提供完整的项目排序。', 'invalid_project_order', 400);
   }
   const ids = value.map(Number);
-  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
     throw new ProjectAdminError('项目排序中存在无效 ID。', 'invalid_project_id', 400);
   }
   if (new Set(ids).size !== ids.length) {
@@ -401,7 +401,7 @@ function optionalDescription(value: unknown): string {
 
 function integerDisplayOrder(value: unknown): number {
   const number = Number(value);
-  if (!Number.isInteger(number) || number < 0) {
+  if (!Number.isSafeInteger(number) || number < 0) {
     throw new ProjectAdminError('显示顺序必须是非负整数。', 'invalid_display_order', 400);
   }
   return number;
@@ -447,9 +447,11 @@ function projectCandidate(input: unknown): Partial<AdminProject> | null {
   };
 }
 
-function projectOrderCandidate(input: unknown): unknown {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  return { projectIds: (input as Record<string, unknown>).projectIds };
+function projectOrderCandidate(input: unknown, projects: AdminProject[]): unknown {
+  const requestedProjectIds = input && typeof input === 'object' && !Array.isArray(input)
+    ? (input as Record<string, unknown>).projectIds
+    : undefined;
+  return { requestedProjectIds, projects };
 }
 
 function auditProjectSelectStatement(

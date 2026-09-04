@@ -8,7 +8,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (auth.response) return auth.response;
   try {
     const id = Number((await context.params).id);
-    if (!Number.isInteger(id) || id <= 0) {
+    if (!Number.isSafeInteger(id) || id <= 0) {
       throw new ProjectAdminError('项目 ID 无效。', 'invalid_project_id', 400);
     }
     const project = await updateAdminProject(auth.user, id, await request.json());

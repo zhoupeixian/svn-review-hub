@@ -30,7 +30,7 @@ export function projectAdminErrorResponse(error: unknown): Response {
     );
   }
   return Response.json(
-    { error: error instanceof Error ? error.message : '项目维护失败。' },
+    { error: '项目维护暂时不可用。' },
     { status: 500 },
   );
 }
