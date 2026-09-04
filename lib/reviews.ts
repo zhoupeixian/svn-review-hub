@@ -874,11 +874,18 @@ export async function getReviewSummaries(
 export async function getEnabledReviewProject(
   slug: string,
 ): Promise<ReviewProject | null> {
+  const project = await getReviewProject(slug);
+  return project?.enabled ? project : null;
+}
+
+export async function getReviewProject(
+  slug: string,
+): Promise<ReviewProject | null> {
   const normalizedSlug = slug.trim().toLowerCase();
   if (!isValidReviewProjectSlug(normalizedSlug)) return null;
   const project = await first<Omit<ReviewProject, 'enabled'> & { enabled: number }>(
     `SELECT id, name, slug, description, display_order AS displayOrder, enabled
-     FROM review_projects WHERE slug = ? AND enabled = 1`,
+     FROM review_projects WHERE slug = ?`,
     [normalizedSlug],
   );
   return project ? { ...project, enabled: project.enabled === 1 } : null;

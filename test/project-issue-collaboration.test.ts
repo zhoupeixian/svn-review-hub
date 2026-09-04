@@ -104,6 +104,25 @@ describe.sequential('按项目隔离匿名问题协作', () => {
     ).all()).toMatchObject({ results: [{ issueId: haihuaIssue.id }] });
   });
 
+  it('停用项目拒绝匿名更新且不消耗限流，恢复后重新允许更新', async () => {
+    const issue = await issueForProject('haihua');
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 2').run();
+
+    const disabled = await patchProjectIssue(updateRequest('192.0.2.13'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
+    });
+
+    expect(disabled.status).toBe(404);
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_issue_events').first()).toEqual({ count: 0 });
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM anonymous_update_limits').first()).toEqual({ count: 0 });
+
+    await DB.prepare('UPDATE review_projects SET enabled = 1 WHERE id = 2').run();
+    const restored = await patchProjectIssue(updateRequest('192.0.2.13'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
+    });
+    expect(restored.status).toBe(200);
+  });
+
   it('同一匿名来源在不同项目分别限流并记录项目内来源摘要', async () => {
     const clientIp = '192.0.2.12';
     const zherpIssue = await issueForProject('zherp');

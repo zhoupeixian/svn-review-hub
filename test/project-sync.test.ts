@@ -176,6 +176,12 @@ describe.sequential('按项目同步日志', () => {
     expect(await unknownProject.json()).toEqual(await disabledProject.json());
     expect(await wrongKey.json()).toEqual({ error: '项目或项目同步密钥无效。' });
     expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 0 });
+
+    await DB.prepare("UPDATE review_projects SET enabled = 1 WHERE slug = 'disabled'").run();
+    const restoredProject = await importReview(syncRequest('disabled', HAIHUA_KEY));
+    expect(restoredProject.status).toBe(201);
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 1 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/disabled/' })).objects).toHaveLength(1);
   });
 
   it('主密钥丢失或错误时拒绝解密，不使用旧全站密钥覆盖既有密文', async () => {

@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 import { requireChatGPTUser } from '@/app/chatgpt-auth';
 import ArchiveManager from '@/app/admin/archive-manager';
 import UploadForm from '@/app/admin/upload-form';
-import { allowAdministrator, getEnabledReviewProject, getReviewPage } from '@/lib/reviews';
+import { allowAdministrator, getEnabledReviewProject, getReviewPage, getReviewProject } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,11 +12,13 @@ type Props = {
 
 export default async function ProjectAdminPage({ params }: Props) {
   const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const user = await requireChatGPTUser(`/projects/${encodeURIComponent(slug)}/admin`);
+  const isAdmin = await allowAdministrator(user);
+  const project = isAdmin
+    ? await getReviewProject(slug)
+    : await getEnabledReviewProject(slug);
   if (!project) notFound();
   const basePath = `/projects/${project.slug}`;
-  const user = await requireChatGPTUser(`${basePath}/admin`);
-  const isAdmin = await allowAdministrator(user);
   const [activePage, archivedPage] = isAdmin
     ? await Promise.all([
         getReviewPage(project.id, { scope: 'active' }),
@@ -48,17 +50,24 @@ export default async function ProjectAdminPage({ params }: Props) {
       <div className="mx-auto max-w-5xl px-5 py-10 sm:px-8">
         <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#37735a]">{project.name} 日志管理</p>
         <h1 className="mt-2 text-3xl font-black tracking-tight text-[#1b382b]">管理当前项目的审查日志</h1>
+        {!project.enabled && (
+          <p role="status" className="mt-5 rounded-xl border border-[#dccb9c] bg-[#fff8e5] px-4 py-3 text-sm font-bold text-[#795d1e]">
+            项目已停用：可以查看、导出、归档和恢复历史日志，但不能上传新日志。
+          </p>
+        )}
         <div className="mt-7 grid gap-4 sm:grid-cols-3">
           <StatusCard label="已归档日志" value={`${archivedPage.items.length} 份`} />
           <StatusCard label="最近审查日期" value={activePage.items[0]?.logDate ?? '暂无'} />
           <StatusCard label="当前审查项目" value={project.name} />
         </div>
-        <section className="mt-8 rounded-3xl border border-[#d8e4d9] bg-white p-6 shadow-[0_12px_34px_rgba(31,77,51,0.05)] sm:p-8">
-          <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#4c8068]">手工补录 / 更正</p>
-          <h2 className="mt-1 text-xl font-black tracking-tight text-[#243e31]">上传审查日志 Markdown</h2>
-          <p className="mt-2 text-sm leading-6 text-[#66766d]">日志将固定写入当前审查项目，不提供跨项目目标选择。</p>
-          <UploadForm uploadApiPath={`/api/projects/${project.slug}/reviews`} />
-        </section>
+        {project.enabled && (
+          <section className="mt-8 rounded-3xl border border-[#d8e4d9] bg-white p-6 shadow-[0_12px_34px_rgba(31,77,51,0.05)] sm:p-8">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#4c8068]">手工补录 / 更正</p>
+            <h2 className="mt-1 text-xl font-black tracking-tight text-[#243e31]">上传审查日志 Markdown</h2>
+            <p className="mt-2 text-sm leading-6 text-[#66766d]">日志将固定写入当前审查项目，不提供跨项目目标选择。</p>
+            <UploadForm uploadApiPath={`/api/projects/${project.slug}/reviews`} />
+          </section>
+        )}
         <ArchiveManager
           initialActive={activePage}
           initialArchived={archivedPage}

@@ -1,4 +1,5 @@
-import { getEnabledReviewProject, getReviewMarkdown } from '@/lib/reviews';
+import { getAccessibleReviewProject } from '@/lib/project-api';
+import { getReviewMarkdown } from '@/lib/reviews';
 
 type Context = {
   params: Promise<{ slug: string; id: string }>;
@@ -6,7 +7,7 @@ type Context = {
 
 export async function GET(_request: Request, { params }: Context) {
   const { slug, id } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) {
     return Response.json({ error: '审查日志不存在。' }, { status: 404 });
   }
