@@ -35,6 +35,7 @@ describe.sequential('按项目同步日志', () => {
 
   beforeEach(async () => {
     await DB.batch([
+      DB.prepare('DELETE FROM review_object_cleanup_queue'),
       DB.prepare('DELETE FROM review_issue_events'),
       DB.prepare('DELETE FROM review_issues'),
       DB.prepare('DELETE FROM review_revisions'),
@@ -258,6 +259,53 @@ describe.sequential('按项目同步日志', () => {
     await expect(runtime.FILES.get(before!.objectKey)).resolves.toBeNull();
     await expect(runtime.FILES.get(after!.objectKey).then((object) => object?.text()))
       .resolves.toContain('内容已更新。');
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
+  it('旧 R2 对象清理失败不推翻已提交导入，并由后续同步重试清理', async () => {
+    const baseInput = {
+      sourceKey: 'cleanup-retry-source',
+      sourceName: 'cleanup-retry.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: reviewMarkdown() },
+    );
+    const before = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'cleanup-retry-source'",
+    ).first<{ objectKey: string }>();
+    vi.spyOn(runtime.FILES, 'delete').mockRejectedValueOnce(new Error('temporary R2 failure'));
+    const changedMarkdown = reviewMarkdown().replace(
+      '两个项目应分别保存此问题。',
+      '清理失败后仍已提交。',
+    );
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: changedMarkdown },
+    )).resolves.toMatchObject({ sourceName: 'cleanup-retry.md' });
+    const committed = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'cleanup-retry-source'",
+    ).first<{ objectKey: string }>();
+    expect(committed?.objectKey).not.toBe(before?.objectKey);
+    await expect(runtime.FILES.get(committed!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('清理失败后仍已提交。');
+    await expect(runtime.FILES.get(before!.objectKey)).resolves.not.toBeNull();
+    expect(await DB.prepare(
+      'SELECT object_key AS objectKey FROM review_object_cleanup_queue',
+    ).first()).toEqual({ objectKey: before!.objectKey });
+
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: changedMarkdown },
+    );
+    await expect(runtime.FILES.get(before!.objectKey)).resolves.toBeNull();
+    expect(await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_object_cleanup_queue',
+    ).first()).toEqual({ count: 0 });
     expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
       .toHaveLength(1);
   });

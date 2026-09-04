@@ -578,6 +578,12 @@ export async function ensureReviewSchema(): Promise<void> {
         'created_at TEXT NOT NULL',
         ')',
       ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS review_object_cleanup_queue (',
+        'object_key TEXT PRIMARY KEY,',
+        'created_at TEXT NOT NULL',
+        ')',
+      ].join(' '),
     ];
 
     await DB.batch(
@@ -594,6 +600,7 @@ export async function ensureReviewSchema(): Promise<void> {
       'DROP INDEX IF EXISTS idx_review_logs_source_key',
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_logs_project_source_key ON review_logs(project_id, source_key)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_project_id ON review_logs(project_id)',
+      'CREATE INDEX IF NOT EXISTS idx_review_logs_content_object_key ON review_logs(content_object_key)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_log_date ON review_logs(log_date)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_severity ON review_logs(p1_count, p2_count)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_archive_date_id ON review_logs(archived_at, log_date, id)',
@@ -1850,6 +1857,18 @@ export async function ingestReviewForProject(
         contentObjectKey,
       ),
     ),
+    ...(existing && existing.contentObjectKey !== contentObjectKey
+      ? [
+          DB.prepare(
+            `INSERT OR IGNORE INTO review_object_cleanup_queue (object_key, created_at)
+             SELECT ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM review_logs
+               WHERE project_id = ? AND source_key = ? AND content_object_key = ?
+             )`,
+          ).bind(existing.contentObjectKey, now, projectId, sourceKey, contentObjectKey),
+        ]
+      : []),
     DB.prepare(
       `SELECT l.id FROM review_logs l
        JOIN review_projects p ON p.id = l.project_id
@@ -1880,16 +1899,7 @@ export async function ingestReviewForProject(
 
   const committedIdentity = results.at(-1)!.results[0] as { id: number };
   const reviewId = committedIdentity.id;
-
-  if (existing && existing.contentObjectKey !== contentObjectKey) {
-    const remainingReference = await first<{ found: number }>(
-      'SELECT 1 AS found FROM review_logs WHERE content_object_key = ? LIMIT 1',
-      [existing.contentObjectKey],
-    );
-    if (!remainingReference) {
-      await FILES.delete(existing.contentObjectKey);
-    }
-  }
+  await drainReviewObjectCleanupQueue(DB, FILES);
 
   const review = await first<ReviewSummary>(
     [
@@ -1913,6 +1923,43 @@ export async function ingestReviewForProject(
       parsedIssueCount: currentIssues.length,
     },
   };
+}
+
+async function drainReviewObjectCleanupQueue(
+  DB: D1Database,
+  FILES: R2Bucket,
+): Promise<void> {
+  let queued: D1Result<{ objectKey: string }>;
+  try {
+    queued = await DB.prepare(
+      `SELECT cleanup.object_key AS objectKey
+       FROM review_object_cleanup_queue cleanup
+       WHERE NOT EXISTS (
+         SELECT 1 FROM review_logs review
+         WHERE review.content_object_key = cleanup.object_key
+       )
+       ORDER BY cleanup.created_at, cleanup.object_key
+       LIMIT 100`,
+    ).all<{ objectKey: string }>();
+  } catch {
+    return;
+  }
+
+  const objectKeys = (queued.results ?? []).map((item) => item.objectKey);
+  if (!objectKeys.length) return;
+  try {
+    await FILES.delete(objectKeys);
+    await DB.prepare(
+      `DELETE FROM review_object_cleanup_queue
+       WHERE object_key IN (SELECT value FROM json_each(?))
+         AND NOT EXISTS (
+           SELECT 1 FROM review_logs
+           WHERE review_logs.content_object_key = review_object_cleanup_queue.object_key
+         )`,
+    ).bind(JSON.stringify(objectKeys)).run();
+  } catch {
+    return;
+  }
 }
 
 function validateParsedReview(parsed: ReturnType<typeof parseReviewMarkdown>): void {
