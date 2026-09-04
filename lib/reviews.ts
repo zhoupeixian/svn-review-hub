@@ -1704,16 +1704,25 @@ export async function ingestReviewForProject(
   const createdContentObject = !reusableObject;
 
   if (createdContentObject) {
-    await FILES.put(contentObjectKey, markdown, {
-      httpMetadata: {
-        contentType: 'text/markdown; charset=utf-8',
-      },
-      customMetadata: {
-        projectSlug: storedProject.slug,
-        logDate: parsed.logDate,
-        sourceName,
-      },
-    });
+    await DB.prepare(
+      `INSERT OR IGNORE INTO review_object_cleanup_queue (object_key, created_at)
+       VALUES (?, ?)`,
+    ).bind(contentObjectKey, now).run();
+    try {
+      await FILES.put(contentObjectKey, markdown, {
+        httpMetadata: {
+          contentType: 'text/markdown; charset=utf-8',
+        },
+        customMetadata: {
+          projectSlug: storedProject.slug,
+          logDate: parsed.logDate,
+          sourceName,
+        },
+      });
+    } catch (error) {
+      await drainReviewObjectCleanupQueue(DB, FILES);
+      throw error;
+    }
   }
 
   const existingIssues = existing
@@ -1869,6 +1878,18 @@ export async function ingestReviewForProject(
           ).bind(existing.contentObjectKey, now, projectId, sourceKey, contentObjectKey),
         ]
       : []),
+    ...(createdContentObject
+      ? [
+          DB.prepare(
+            `DELETE FROM review_object_cleanup_queue
+             WHERE object_key = ?
+               AND EXISTS (
+                 SELECT 1 FROM review_logs
+                 WHERE project_id = ? AND source_key = ? AND content_object_key = ?
+               )`,
+          ).bind(contentObjectKey, projectId, sourceKey, contentObjectKey),
+        ]
+      : []),
     DB.prepare(
       `SELECT l.id FROM review_logs l
        JOIN review_projects p ON p.id = l.project_id
@@ -1882,7 +1903,7 @@ export async function ingestReviewForProject(
     results = await DB.batch(statements);
   } catch (error) {
     if (createdContentObject) {
-      await FILES.delete(contentObjectKey);
+      await drainReviewObjectCleanupQueue(DB, FILES);
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -1892,7 +1913,7 @@ export async function ingestReviewForProject(
   }
   if (!results.at(-1)?.results?.length) {
     if (createdContentObject) {
-      await FILES.delete(contentObjectKey);
+      await drainReviewObjectCleanupQueue(DB, FILES);
     }
     throw new Error('审查项目已停用或同一来源已被并发更新，日志未写入。');
   }

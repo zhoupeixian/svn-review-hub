@@ -310,6 +310,40 @@ describe.sequential('按项目同步日志', () => {
       .toHaveLength(1);
   });
 
+  it('D1 导入失败且 R2 清理暂时失败时保留清理意图，并由后续同步回收孤儿对象', async () => {
+    const input = {
+      markdown: reviewMarkdown(),
+      sourceKey: 'failed-import-cleanup-retry',
+      sourceName: 'failed-import-cleanup-retry.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+    const putSpy = vi.spyOn(runtime.FILES, 'put');
+    vi.spyOn(runtime.FILES, 'delete').mockRejectedValueOnce(new Error('temporary R2 failure'));
+    vi.spyOn(DB, 'batch').mockRejectedValueOnce(new Error('simulated D1 failure'));
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      input,
+    )).rejects.toThrow('D1 原子更新失败');
+
+    const orphanKey = String(putSpy.mock.calls[0]?.[0]);
+    expect(orphanKey).toContain('review-logs/zherp/');
+    await expect(runtime.FILES.get(orphanKey)).resolves.not.toBeNull();
+    expect(await DB.prepare(
+      'SELECT object_key AS objectKey FROM review_object_cleanup_queue',
+    ).first()).toEqual({ objectKey: orphanKey });
+
+    await ingestReviewForProject({ id: 1, slug: 'zherp' }, input);
+
+    await expect(runtime.FILES.get(orphanKey)).resolves.toBeNull();
+    expect(await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_object_cleanup_queue',
+    ).first()).toEqual({ count: 0 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
   it('同一来源并发替换时过期请求不覆盖胜者且清理自己的 R2 对象', async () => {
     const baseInput = {
       sourceKey: 'racing-source',
