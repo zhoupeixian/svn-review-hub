@@ -60,6 +60,11 @@ export default async function ProjectAdminPage({ params }: Props) {
           <StatusCard label="最近审查日期" value={activePage.items[0]?.logDate ?? '暂无'} />
           <StatusCard label="当前审查项目" value={project.name} />
         </div>
+        <nav aria-label="项目数据导出" className="mt-6 flex flex-wrap gap-3">
+          <ExportLink href={`/api/projects/${project.slug}/reviews/export?scope=active`}>导出当前日志</ExportLink>
+          <ExportLink href={`/api/projects/${project.slug}/reviews/export?scope=archived`}>导出归档日志</ExportLink>
+          <ExportLink href={`/api/projects/${project.slug}/issues/export?scope=active`}>导出问题跟进</ExportLink>
+        </nav>
         {project.enabled && (
           <section className="mt-8 rounded-3xl border border-[#d8e4d9] bg-white p-6 shadow-[0_12px_34px_rgba(31,77,51,0.05)] sm:p-8">
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#4c8068]">手工补录 / 更正</p>
@@ -82,4 +87,8 @@ export default async function ProjectAdminPage({ params }: Props) {
 
 function StatusCard({ label, value }: { label: string; value: string }) {
   return <div className="rounded-2xl border border-[#d5e2d6] bg-white p-5"><p className="text-xs font-semibold text-[#748278]">{label}</p><p className="mt-2 text-lg font-black text-[#28503c]">{value}</p></div>;
+}
+
+function ExportLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return <a href={href} className="rounded-lg border border-[#b9cbbb] bg-white px-4 py-2.5 text-sm font-bold text-[#1d5b46]">{children}</a>;
 }
