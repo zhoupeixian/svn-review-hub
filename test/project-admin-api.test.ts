@@ -214,12 +214,20 @@ describe.sequential('全局审查项目维护与审计 API', () => {
        FROM sequence`,
     ).run();
     const ids = (await projectOrder()).map((project) => project.id).reverse();
+    const batch = DB.batch.bind(DB);
+    let batchStatementCount = 0;
+    const batchSpy = vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      batchStatementCount = statements.length;
+      return batch(statements);
+    });
 
     const response = await reorderProjects(jsonRequest('/api/admin/projects/order', 'PUT', {
       projectIds: ids,
     }));
+    batchSpy.mockRestore();
 
     expect(response.status).toBe(200);
+    expect(batchStatementCount).toBe(2);
     expect((await projectOrder()).map((project) => project.displayOrder)).toEqual(
       Array.from({ length: 94 }, (_, index) => (93 - index) * 10),
     );

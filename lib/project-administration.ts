@@ -259,28 +259,22 @@ export async function reorderAdminProjects(
   }
 
   const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [];
   const projectSetGuard = currentProjectSetGuard(projectIds);
-  projectIds.forEach((projectId, index) => {
-    statements.push(
-      db().prepare(
-        `UPDATE review_projects SET display_order = ?, updated_at = ?
-         WHERE id = ? AND ${projectSetGuard.sql}`,
-      ).bind(index * 10, now, projectId, ...projectSetGuard.values),
-      auditProjectIdSelectStatement(
-        user,
-        'project.reorder',
-        now,
-        projectId,
-        projectSetGuard,
-      ),
-    );
-  });
-  const results = await db().batch(statements);
-  const auditWriteCount = results.reduce(
-    (count, result, index) => count + (index % 2 === 1 ? result.meta.changes : 0),
-    0,
-  );
+  const projectIdsJson = JSON.stringify(projectIds);
+  const results = await db().batch([
+    db().prepare(
+      `UPDATE review_projects
+       SET display_order = (
+             SELECT CAST(requested.key AS INTEGER) * 10
+             FROM json_each(?) AS requested
+             WHERE CAST(requested.value AS INTEGER) = review_projects.id
+           ),
+           updated_at = ?
+       WHERE ${projectSetGuard.sql}`,
+    ).bind(projectIdsJson, now, ...projectSetGuard.values),
+    auditProjectSetStatement(user, 'project.reorder', now, projectSetGuard),
+  ]);
+  const auditWriteCount = results[1]?.meta.changes ?? 0;
   if (auditWriteCount !== projectIds.length) {
     const currentProjects = await listAdminProjects();
     const error = new ProjectAdminError(
@@ -553,11 +547,10 @@ function auditProjectSelectStatement(
   );
 }
 
-function auditProjectIdSelectStatement(
+function auditProjectSetStatement(
   user: ChatGPTUser,
   action: ProjectAdminAction,
   createdAt: string,
-  projectId: number,
   projectSetGuard: { sql: string; values: SqlValue[] },
 ): D1PreparedStatement {
   return db().prepare(
@@ -570,14 +563,13 @@ function auditProjectIdSelectStatement(
                         'description', description, 'displayOrder', display_order,
                         'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
             ?, ?, ?, ?, 'success', NULL, ?
-     FROM review_projects WHERE id = ? AND ${projectSetGuard.sql}`,
+     FROM review_projects WHERE ${projectSetGuard.sql}`,
   ).bind(
     user.userId,
     user.email,
     user.displayName,
     action,
     createdAt,
-    projectId,
     ...projectSetGuard.values,
   );
 }
