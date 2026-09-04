@@ -251,6 +251,40 @@ async function resetToPreProjectSchema(): Promise<void> {
 }
 
 describe.sequential('审查生命周期 D1 schema', () => {
+  it('部署迁移创建无级联外键的项目管理审计表和筛选索引', async () => {
+    await DB.prepare('DROP TABLE IF EXISTS project_admin_audits').run();
+    const migration = TEST_MIGRATIONS.find((item) =>
+      item.name.startsWith('0006_'),
+    );
+    expect(migration).toBeDefined();
+
+    await DB.batch(migration!.queries.map((query) => DB.prepare(query)));
+
+    expect(await tableColumns('project_admin_audits')).toEqual([
+      'id',
+      'project_id_snapshot',
+      'project_slug_snapshot',
+      'project_name_snapshot',
+      'project_snapshot_json',
+      'admin_user_id',
+      'admin_email_snapshot',
+      'admin_display_name_snapshot',
+      'action',
+      'result',
+      'failure_code',
+      'created_at',
+    ]);
+    expect(await foreignKeyTargets('project_admin_audits')).toEqual([]);
+    expect(await indexNames('project_admin_audits')).toEqual(
+      expect.arrayContaining([
+        'idx_project_admin_audits_time',
+        'idx_project_admin_audits_project',
+        'idx_project_admin_audits_admin',
+        'idx_project_admin_audits_action',
+      ]),
+    );
+  });
+
   it('迁移创建默认 ZHERP 审查项目和日志归属', async () => {
     expect(await tableColumns('review_projects')).toEqual([
       'id',

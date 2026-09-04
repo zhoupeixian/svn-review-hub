@@ -562,6 +562,22 @@ export async function ensureReviewSchema(): Promise<void> {
         'FOREIGN KEY(admin_user_id) REFERENCES admin_users(user_id) ON DELETE CASCADE',
         ')',
       ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS project_admin_audits (',
+        'id INTEGER PRIMARY KEY AUTOINCREMENT,',
+        'project_id_snapshot INTEGER,',
+        'project_slug_snapshot TEXT,',
+        'project_name_snapshot TEXT,',
+        'project_snapshot_json TEXT NOT NULL,',
+        'admin_user_id TEXT NOT NULL,',
+        'admin_email_snapshot TEXT NOT NULL,',
+        'admin_display_name_snapshot TEXT NOT NULL,',
+        'action TEXT NOT NULL,',
+        'result TEXT NOT NULL,',
+        'failure_code TEXT,',
+        'created_at TEXT NOT NULL',
+        ')',
+      ].join(' '),
     ];
 
     await DB.batch(
@@ -588,6 +604,10 @@ export async function ensureReviewSchema(): Promise<void> {
       'CREATE INDEX IF NOT EXISTS idx_review_issues_status_current_review ON review_issues(status, source_current, review_id)',
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_issues_review_issue_key ON review_issues(review_id, issue_key) WHERE issue_key IS NOT NULL',
       'CREATE INDEX IF NOT EXISTS idx_review_issue_events_issue_created ON review_issue_events(issue_id, created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_project_admin_audits_time ON project_admin_audits(created_at, id)',
+      'CREATE INDEX IF NOT EXISTS idx_project_admin_audits_project ON project_admin_audits(project_slug_snapshot, created_at, id)',
+      'CREATE INDEX IF NOT EXISTS idx_project_admin_audits_admin ON project_admin_audits(admin_user_id, created_at, id)',
+      'CREATE INDEX IF NOT EXISTS idx_project_admin_audits_action ON project_admin_audits(action, created_at, id)',
       [
         'CREATE TRIGGER IF NOT EXISTS review_issues_review_fk_insert',
         'BEFORE INSERT ON review_issues',

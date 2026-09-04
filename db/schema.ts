@@ -140,6 +140,42 @@ export const adminUsers = sqliteTable('admin_users', {
   createdAt: text('created_at').notNull(),
 });
 
+export const projectAdminAudits = sqliteTable(
+  'project_admin_audits',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    projectIdSnapshot: integer('project_id_snapshot'),
+    projectSlugSnapshot: text('project_slug_snapshot'),
+    projectNameSnapshot: text('project_name_snapshot'),
+    projectSnapshotJson: text('project_snapshot_json').notNull(),
+    adminUserId: text('admin_user_id').notNull(),
+    adminEmailSnapshot: text('admin_email_snapshot').notNull(),
+    adminDisplayNameSnapshot: text('admin_display_name_snapshot').notNull(),
+    action: text('action').notNull(),
+    result: text('result').notNull(),
+    failureCode: text('failure_code'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_project_admin_audits_time').on(table.createdAt, table.id),
+    index('idx_project_admin_audits_project').on(
+      table.projectSlugSnapshot,
+      table.createdAt,
+      table.id,
+    ),
+    index('idx_project_admin_audits_admin').on(
+      table.adminUserId,
+      table.createdAt,
+      table.id,
+    ),
+    index('idx_project_admin_audits_action').on(
+      table.action,
+      table.createdAt,
+      table.id,
+    ),
+  ],
+);
+
 export const reviewIssueEvents = sqliteTable(
   'review_issue_events',
   {
