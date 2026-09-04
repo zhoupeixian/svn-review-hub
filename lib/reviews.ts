@@ -1680,6 +1680,7 @@ export async function ingestReviewForProject(
     'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' + sourceHash + '.md';
   const { DB, FILES } = getRuntime();
   const projectId = storedProject.id;
+  const contentObjectExisted = Boolean(await FILES.head(contentObjectKey));
 
   await FILES.put(contentObjectKey, markdown, {
     httpMetadata: {
@@ -1741,7 +1742,8 @@ export async function ingestReviewForProject(
         'project_id, log_date, source_key, source_name, source_hash, content_object_key,',
         'title, overview, scope_text, revision_count, reviewed_count, skipped_count,',
         'p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at, updated_at',
-        ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ') SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?',
+        'FROM review_projects WHERE id = ? AND slug = ? AND enabled = 1',
         'ON CONFLICT(project_id, source_key) DO UPDATE SET',
         'log_date = excluded.log_date, source_name = excluded.source_name,',
         'source_hash = excluded.source_hash, content_object_key = excluded.content_object_key,',
@@ -1772,19 +1774,27 @@ export async function ingestReviewForProject(
       input.importedBy.slice(0, 255),
       now,
       now,
+      projectId,
+      storedProject.slug,
     ),
     DB.prepare(
-      'DELETE FROM review_revisions WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)',
-    ).bind(projectId, sourceKey),
+      `DELETE FROM review_revisions
+       WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)
+         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
+    ).bind(projectId, sourceKey, projectId),
     DB.prepare(
-      'UPDATE review_issues SET source_current = 0 WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)',
-    ).bind(projectId, sourceKey),
+      `UPDATE review_issues SET source_current = 0
+       WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)
+         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
+    ).bind(projectId, sourceKey, projectId),
     ...parsed.revisions.map((revision) =>
       DB.prepare(
         [
           'INSERT INTO review_revisions (',
           'review_id, revision, author, committed_at, description, conclusion',
-          ') SELECT id, ?, ?, ?, ?, ? FROM review_logs WHERE project_id = ? AND source_key = ?',
+          ') SELECT l.id, ?, ?, ?, ?, ? FROM review_logs l',
+          'JOIN review_projects p ON p.id = l.project_id',
+          'WHERE l.project_id = ? AND l.source_key = ? AND p.enabled = 1',
         ].join(' '),
       ).bind(
         revision.revision,
@@ -1802,8 +1812,9 @@ export async function ingestReviewForProject(
           'INSERT INTO review_issues (',
           'review_id, issue_key, severity, title, related_revisions, detail,',
           'status, status_note, status_updated_at, source_current, version',
-          ") SELECT id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
-          'FROM review_logs WHERE project_id = ? AND source_key = ?',
+          ") SELECT l.id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
+          'FROM review_logs l JOIN review_projects p ON p.id = l.project_id',
+          'WHERE l.project_id = ? AND l.source_key = ? AND p.enabled = 1',
           'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
           'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
           'related_revisions = excluded.related_revisions, detail = excluded.detail,',
@@ -1819,16 +1830,24 @@ export async function ingestReviewForProject(
         sourceKey,
       ),
     ),
+    DB.prepare(
+      'SELECT id FROM review_projects WHERE id = ? AND slug = ? AND enabled = 1',
+    ).bind(projectId, storedProject.slug),
   ];
 
+  let results: D1Result[];
   try {
-    await DB.batch(statements);
+    results = await DB.batch(statements);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `D1 原子更新失败，未提交部分结构化变更：${message}`,
       { cause: error },
     );
+  }
+  if (!results.at(-1)?.results?.length) {
+    if (!contentObjectExisted) await FILES.delete(contentObjectKey);
+    throw new Error('审查项目已停用，日志未写入。');
   }
 
   const identity = await first<{ id: number }>(
@@ -1837,7 +1856,6 @@ export async function ingestReviewForProject(
   );
   if (!identity) throw new Error('日志已写入，但未能读取导入标识。');
   const reviewId = identity.id;
-  await rebuildReviewSearch(reviewId);
 
   const review = await first<ReviewSummary>(
     [

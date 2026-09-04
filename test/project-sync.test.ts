@@ -184,6 +184,27 @@ describe.sequential('按项目同步日志', () => {
     expect((await runtime.FILES.list({ prefix: 'review-logs/disabled/' })).objects).toHaveLength(1);
   });
 
+  it('导入通过入口校验后项目被并发停用时不提交 D1 并清理新 R2 对象', async () => {
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 1').run();
+      return batch(statements);
+    });
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'concurrent-disable',
+        sourceName: 'concurrent-disable.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    )).rejects.toThrow('已停用');
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 0 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects).toEqual([]);
+  });
+
   it('主密钥丢失或错误时拒绝解密，不使用旧全站密钥覆盖既有密文', async () => {
     const encryptedBefore = await DB.prepare(
       'SELECT sync_key_encrypted AS encrypted FROM review_projects WHERE id = 1',

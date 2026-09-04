@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-plugin/types" />
 
 import { env } from 'cloudflare:workers';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PATCH as patchProjectIssue } from '@/app/api/projects/[slug]/issues/[id]/status/route';
 import { hashAnonymousSource } from '@/lib/anonymous-rate-limit';
 import { ensureReviewSchema, ingestReview, ingestReviewForProject } from '@/lib/reviews';
@@ -121,6 +121,23 @@ describe.sequential('按项目隔离匿名问题协作', () => {
       params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
     });
     expect(restored.status).toBe(200);
+  });
+
+  it('匿名更新通过入口校验后项目被并发停用时不提交问题或事件', async () => {
+    const issue = await issueForProject('haihua');
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 2').run();
+      return batch(statements);
+    });
+
+    const response = await patchProjectIssue(updateRequest('192.0.2.14'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await issueForProject('haihua')).toMatchObject({ status: 'open', version: 0 });
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_issue_events').first()).toEqual({ count: 0 });
   });
 
   it('同一匿名来源在不同项目分别限流并记录项目内来源摘要', async () => {
