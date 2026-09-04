@@ -129,6 +129,16 @@ describe('全局项目维护 UI', () => {
     expect(screen.getByText('管理员（admin@example.com）')).toBeTruthy();
     expect(screen.getByText('成功')).toBeTruthy();
   });
+
+  it('停用项目不显示当前必然返回 404 的日志管理链接', () => {
+    render(<ProjectAdminManager
+      initialProjects={[{ ...projects[1], enabled: false }]}
+      initialAudits={[]}
+    />);
+
+    expect(screen.queryByRole('link', { name: '进入 海华项目 日志管理' })).toBeNull();
+    expect(screen.getByText('项目已停用，恢复后可进入日志管理')).toBeTruthy();
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

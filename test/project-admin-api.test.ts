@@ -201,6 +201,36 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     expect(reorderAudits.map((audit) => audit.projectSlug).sort()).toEqual(['finance', 'haihua', 'zherp']);
   });
 
+  it('排序写入前项目全集变化时原子拒绝，不写成功审计或部分顺序', async () => {
+    const haihua = await createProjectAndId('海华项目', 'haihua', 10);
+    const batch = DB.batch.bind(DB);
+    const batchSpy = vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare(
+        "INSERT INTO review_projects (name, slug, description, display_order, enabled) VALUES ('并发新增项目', 'concurrent', '', 30, 1)",
+      ).run();
+      return batch(statements);
+    });
+
+    const response = await reorderProjects(jsonRequest('/api/admin/projects/order', 'PUT', {
+      projectIds: [haihua, 1],
+    }));
+    batchSpy.mockRestore();
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'project_set_changed' });
+    expect(await projectOrder()).toEqual([
+      { id: 1, displayOrder: 0 },
+      { id: haihua, displayOrder: 10 },
+      expect.objectContaining({ displayOrder: 30 }),
+    ]);
+    const reorderAudits = (await audits()).filter((audit) => audit.action === 'project.reorder');
+    expect(reorderAudits).toHaveLength(1);
+    expect(reorderAudits[0]).toMatchObject({
+      result: 'failure', failureCode: 'project_set_changed',
+    });
+    expect(JSON.parse(reorderAudits[0].projectSnapshot).projects).toHaveLength(3);
+  });
+
   it.each([
     [[1, 1], 'duplicate_project_id'],
     [[1, 999], 'unknown_project_id'],

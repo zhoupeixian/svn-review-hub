@@ -254,15 +254,42 @@ export async function reorderAdminProjects(
 
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [];
+  const projectSetGuard = currentProjectSetGuard(projectIds);
   projectIds.forEach((projectId, index) => {
     statements.push(
       db().prepare(
-        'UPDATE review_projects SET display_order = ?, updated_at = ? WHERE id = ?',
-      ).bind(index * 10, now, projectId),
-      auditProjectIdSelectStatement(user, 'project.reorder', now, projectId),
+        `UPDATE review_projects SET display_order = ?, updated_at = ?
+         WHERE id = ? AND ${projectSetGuard.sql}`,
+      ).bind(index * 10, now, projectId, ...projectSetGuard.values),
+      auditProjectIdSelectStatement(
+        user,
+        'project.reorder',
+        now,
+        projectId,
+        projectSetGuard,
+      ),
     );
   });
-  await db().batch(statements);
+  const results = await db().batch(statements);
+  const auditWriteCount = results.reduce(
+    (count, result, index) => count + (index % 2 === 1 ? result.meta.changes : 0),
+    0,
+  );
+  if (auditWriteCount !== projectIds.length) {
+    const currentProjects = await listAdminProjects();
+    const error = new ProjectAdminError(
+      '项目列表已变化，请刷新后重新排序。',
+      'project_set_changed',
+      409,
+    );
+    await writeAudit(user, {
+      snapshot: { requestedProjectIds: projectIds, projects: currentProjects },
+      action: 'project.reorder',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
   return listAdminProjects();
 }
 
@@ -490,6 +517,7 @@ function auditProjectIdSelectStatement(
   action: ProjectAdminAction,
   createdAt: string,
   projectId: number,
+  projectSetGuard: { sql: string; values: number[] },
 ): D1PreparedStatement {
   return db().prepare(
     `INSERT INTO project_admin_audits
@@ -501,8 +529,30 @@ function auditProjectIdSelectStatement(
                         'description', description, 'displayOrder', display_order,
                         'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
             ?, ?, ?, ?, 'success', NULL, ?
-     FROM review_projects WHERE id = ?`,
-  ).bind(user.userId, user.email, user.displayName, action, createdAt, projectId);
+     FROM review_projects WHERE id = ? AND ${projectSetGuard.sql}`,
+  ).bind(
+    user.userId,
+    user.email,
+    user.displayName,
+    action,
+    createdAt,
+    projectId,
+    ...projectSetGuard.values,
+  );
+}
+
+function currentProjectSetGuard(projectIds: number[]): {
+  sql: string;
+  values: number[];
+} {
+  const placeholders = projectIds.map(() => '?').join(',');
+  return {
+    sql: `(SELECT COUNT(*) FROM review_projects) = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM review_projects WHERE id NOT IN (${placeholders})
+          )`,
+    values: [projectIds.length, ...projectIds],
+  };
 }
 
 async function writeAudit(user: ChatGPTUser, input: AuditInput): Promise<void> {

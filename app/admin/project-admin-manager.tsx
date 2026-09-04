@@ -209,9 +209,15 @@ export default function ProjectAdminManager({ initialProjects, initialAudits }: 
                 <button type="button" disabled={busy} onClick={() => saveProject(project)} className="rounded-xl bg-[#1e6349] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
                   保存 {project.name} 项目资料
                 </button>
-                <a href={`/projects/${project.slug}/admin`} className="rounded-xl border border-[#bfcfc1] px-4 py-2.5 text-sm font-bold text-[#245d46]">
-                  进入 {project.name} 日志管理
-                </a>
+                {project.enabled ? (
+                  <a href={`/projects/${project.slug}/admin`} className="rounded-xl border border-[#bfcfc1] px-4 py-2.5 text-sm font-bold text-[#245d46]">
+                    进入 {project.name} 日志管理
+                  </a>
+                ) : (
+                  <span className="rounded-xl bg-[#eef2ed] px-4 py-2.5 text-sm font-bold text-[#6b7a71]">
+                    项目已停用，恢复后可进入日志管理
+                  </span>
+                )}
               </div>
             </article>
           );
