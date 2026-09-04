@@ -82,6 +82,7 @@ export const reviewLogs = sqliteTable(
 export const reviewObjectCleanupQueue = sqliteTable('review_object_cleanup_queue', {
   objectKey: text('object_key').primaryKey(),
   createdAt: text('created_at').notNull(),
+  ready: integer('ready').notNull().default(1),
 });
 
 export const reviewRevisions = sqliteTable(

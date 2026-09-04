@@ -744,6 +744,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "ready": {
+          "name": "ready",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
         }
       },
       "indexes": {},

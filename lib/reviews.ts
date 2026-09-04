@@ -581,7 +581,8 @@ export async function ensureReviewSchema(): Promise<void> {
       [
         'CREATE TABLE IF NOT EXISTS review_object_cleanup_queue (',
         'object_key TEXT PRIMARY KEY,',
-        'created_at TEXT NOT NULL',
+        'created_at TEXT NOT NULL,',
+        'ready INTEGER NOT NULL DEFAULT 1',
         ')',
       ].join(' '),
     ];
@@ -1705,8 +1706,8 @@ export async function ingestReviewForProject(
 
   if (createdContentObject) {
     await DB.prepare(
-      `INSERT OR IGNORE INTO review_object_cleanup_queue (object_key, created_at)
-       VALUES (?, ?)`,
+      `INSERT OR IGNORE INTO review_object_cleanup_queue (object_key, created_at, ready)
+       VALUES (?, ?, 0)`,
     ).bind(contentObjectKey, now).run();
     try {
       await FILES.put(contentObjectKey, markdown, {
@@ -1720,6 +1721,7 @@ export async function ingestReviewForProject(
         },
       });
     } catch (error) {
+      await markReviewObjectCleanupReady(DB, contentObjectKey);
       await drainReviewObjectCleanupQueue(DB, FILES);
       throw error;
     }
@@ -1903,6 +1905,7 @@ export async function ingestReviewForProject(
     results = await DB.batch(statements);
   } catch (error) {
     if (createdContentObject) {
+      await markReviewObjectCleanupReady(DB, contentObjectKey);
       await drainReviewObjectCleanupQueue(DB, FILES);
     }
     const message = error instanceof Error ? error.message : String(error);
@@ -1913,6 +1916,7 @@ export async function ingestReviewForProject(
   }
   if (!results.at(-1)?.results?.length) {
     if (createdContentObject) {
+      await markReviewObjectCleanupReady(DB, contentObjectKey);
       await drainReviewObjectCleanupQueue(DB, FILES);
     }
     throw new Error('审查项目已停用或同一来源已被并发更新，日志未写入。');
@@ -1950,18 +1954,20 @@ async function drainReviewObjectCleanupQueue(
   DB: D1Database,
   FILES: R2Bucket,
 ): Promise<void> {
+  const abandonedBefore = new Date(Date.now() - 15 * 60_000).toISOString();
   let queued: D1Result<{ objectKey: string }>;
   try {
     queued = await DB.prepare(
       `SELECT cleanup.object_key AS objectKey
        FROM review_object_cleanup_queue cleanup
-       WHERE NOT EXISTS (
-         SELECT 1 FROM review_logs review
-         WHERE review.content_object_key = cleanup.object_key
-       )
+       WHERE (cleanup.ready = 1 OR cleanup.created_at <= ?)
+         AND NOT EXISTS (
+          SELECT 1 FROM review_logs review
+          WHERE review.content_object_key = cleanup.object_key
+        )
        ORDER BY cleanup.created_at, cleanup.object_key
        LIMIT 100`,
-    ).all<{ objectKey: string }>();
+    ).bind(abandonedBefore).all<{ objectKey: string }>();
   } catch {
     return;
   }
@@ -1978,6 +1984,19 @@ async function drainReviewObjectCleanupQueue(
            WHERE review_logs.content_object_key = review_object_cleanup_queue.object_key
          )`,
     ).bind(JSON.stringify(objectKeys)).run();
+  } catch {
+    return;
+  }
+}
+
+async function markReviewObjectCleanupReady(
+  DB: D1Database,
+  objectKey: string,
+): Promise<void> {
+  try {
+    await DB.prepare(
+      'UPDATE review_object_cleanup_queue SET ready = 1 WHERE object_key = ?',
+    ).bind(objectKey).run();
   } catch {
     return;
   }

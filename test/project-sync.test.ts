@@ -344,6 +344,40 @@ describe.sequential('按项目同步日志', () => {
       .toHaveLength(1);
   });
 
+  it('并发同步清理队列时不删除尚未完成 D1 提交的新 R2 对象', async () => {
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await ingestReviewForProject(
+        { id: 1, slug: 'zherp' },
+        {
+          markdown: reviewMarkdown().replace('项目隔离问题', '并发清理触发器'),
+          sourceKey: 'cleanup-trigger',
+          sourceName: 'cleanup-trigger.md',
+          importedBy: 'test',
+          syncMode: 'automation',
+        },
+      );
+      return batch(statements);
+    });
+
+    const review = await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'inflight-cleanup-reservation',
+        sourceName: 'inflight-cleanup-reservation.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    );
+    const stored = await DB.prepare(
+      'SELECT content_object_key AS objectKey FROM review_logs WHERE id = ?',
+    ).bind(review.id).first<{ objectKey: string }>();
+
+    await expect(runtime.FILES.get(stored!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('项目隔离问题');
+  });
+
   it('同一来源并发替换时过期请求不覆盖胜者且清理自己的 R2 对象', async () => {
     const baseInput = {
       sourceKey: 'racing-source',
