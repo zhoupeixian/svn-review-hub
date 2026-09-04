@@ -205,7 +205,7 @@ describe.sequential('按项目同步日志', () => {
     expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects).toEqual([]);
   });
 
-  it('相同内容的并发胜者已提交时失败导入不删除其共享 R2 对象', async () => {
+  it('相同内容的并发胜者已提交时失败导入只清理自己的 R2 对象', async () => {
     const winner = await ingestReviewForProject(
       { id: 1, slug: 'zherp' },
       {
@@ -219,7 +219,7 @@ describe.sequential('按项目同步日志', () => {
     const stored = await DB.prepare(
       'SELECT content_object_key AS objectKey FROM review_logs WHERE id = ?',
     ).bind(winner.id).first<{ objectKey: string }>();
-    vi.spyOn(runtime.FILES, 'head').mockResolvedValueOnce(null);
+    const putSpy = vi.spyOn(runtime.FILES, 'put');
     const batch = DB.batch.bind(DB);
     vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
       await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 1').run();
@@ -238,6 +238,9 @@ describe.sequential('按项目同步日志', () => {
     )).rejects.toThrow('已停用');
     expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 1 });
     expect(stored?.objectKey).toBeTruthy();
+    expect(String(putSpy.mock.calls[0]?.[0])).not.toBe(stored?.objectKey);
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects.map((object) => object.key))
+      .toEqual([stored?.objectKey]);
     await expect(runtime.FILES.get(stored!.objectKey).then((object) => object?.text()))
       .resolves.toContain('项目隔离问题');
   });

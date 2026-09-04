@@ -1677,10 +1677,10 @@ export async function ingestReviewForProject(
   const now = new Date().toISOString();
   const sourceHash = await sha256(markdown);
   const contentObjectKey =
-    'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' + sourceHash + '.md';
+    'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' +
+    sourceHash + '-' + crypto.randomUUID() + '.md';
   const { DB, FILES } = getRuntime();
   const projectId = storedProject.id;
-  const contentObjectExisted = Boolean(await FILES.head(contentObjectKey));
 
   await FILES.put(contentObjectKey, markdown, {
     httpMetadata: {
@@ -1846,12 +1846,7 @@ export async function ingestReviewForProject(
     );
   }
   if (!results.at(-1)?.results?.length) {
-    const committedReference = contentObjectExisted || Boolean(
-      await DB.prepare(
-        'SELECT 1 FROM review_logs WHERE content_object_key = ? LIMIT 1',
-      ).bind(contentObjectKey).first(),
-    );
-    if (!committedReference) await FILES.delete(contentObjectKey);
+    await FILES.delete(contentObjectKey);
     throw new Error('审查项目已停用，日志未写入。');
   }
 
