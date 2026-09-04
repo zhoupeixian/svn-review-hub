@@ -205,6 +205,43 @@ describe.sequential('按项目同步日志', () => {
     expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects).toEqual([]);
   });
 
+  it('相同内容的并发胜者已提交时失败导入不删除其共享 R2 对象', async () => {
+    const winner = await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'winner',
+        sourceName: 'winner.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    );
+    const stored = await DB.prepare(
+      'SELECT content_object_key AS objectKey FROM review_logs WHERE id = ?',
+    ).bind(winner.id).first<{ objectKey: string }>();
+    vi.spyOn(runtime.FILES, 'head').mockResolvedValueOnce(null);
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 1').run();
+      return batch(statements);
+    });
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'loser',
+        sourceName: 'loser.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    )).rejects.toThrow('已停用');
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 1 });
+    expect(stored?.objectKey).toBeTruthy();
+    await expect(runtime.FILES.get(stored!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('项目隔离问题');
+  });
+
   it('主密钥丢失或错误时拒绝解密，不使用旧全站密钥覆盖既有密文', async () => {
     const encryptedBefore = await DB.prepare(
       'SELECT sync_key_encrypted AS encrypted FROM review_projects WHERE id = 1',

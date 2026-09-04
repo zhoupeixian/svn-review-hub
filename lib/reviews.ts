@@ -1846,7 +1846,12 @@ export async function ingestReviewForProject(
     );
   }
   if (!results.at(-1)?.results?.length) {
-    if (!contentObjectExisted) await FILES.delete(contentObjectKey);
+    const committedReference = contentObjectExisted || Boolean(
+      await DB.prepare(
+        'SELECT 1 FROM review_logs WHERE content_object_key = ? LIMIT 1',
+      ).bind(contentObjectKey).first(),
+    );
+    if (!committedReference) await FILES.delete(contentObjectKey);
     throw new Error('审查项目已停用，日志未写入。');
   }
 
