@@ -280,7 +280,9 @@ export async function setAdminProjectEnabled(
     ).bind(target, now, projectId, current, existing.updatedAt),
     auditProjectStatusSelectStatement(user, action, now, projectId, target),
   ]);
-  if (Number(results[1]?.meta.changes ?? 0) !== 1) {
+  const updateWriteCount = Number(results[0]?.meta.changes ?? 0);
+  const auditWriteCount = Number(results[1]?.meta.changes ?? 0);
+  if (updateWriteCount !== 1 || auditWriteCount !== 1) {
     const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
     const error = new ProjectAdminError(
       '项目状态已变化，请刷新后重试。',
@@ -673,7 +675,7 @@ function auditProjectStatusSelectStatement(
                         'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
             ?, ?, ?, ?, 'success', NULL, ?
      FROM review_projects
-     WHERE id = ? AND enabled = ? AND updated_at = ?`,
+     WHERE id = ? AND enabled = ? AND updated_at = ? AND changes() = 1`,
   ).bind(
     user.userId,
     user.email,

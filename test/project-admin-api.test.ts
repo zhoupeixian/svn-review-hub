@@ -224,29 +224,34 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     expect(await (await FILES.get('sentinel/project-admin.txt'))?.text()).toBe('R2 不应被项目维护修改');
   });
 
-  it('状态写入前项目已被并发停用时拒绝伪造成功审计', async () => {
-    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
-    const batch = DB.batch.bind(DB);
-    const batchSpy = vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
-      await DB.prepare(
-        "UPDATE review_projects SET enabled = 0, updated_at = '2026-09-02T00:00:00.000Z' WHERE id = ?",
-      ).bind(projectId).run();
-      return batch(statements);
-    });
+  it('同毫秒的并发停用也拒绝借用胜出请求的状态伪造成功审计', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-02T00:00:00.000Z'));
+    try {
+      const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+      const batch = DB.batch.bind(DB);
+      vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+        await DB.prepare(
+          "UPDATE review_projects SET enabled = 0, updated_at = '2026-09-02T00:00:00.000Z' WHERE id = ?",
+        ).bind(projectId).run();
+        return batch(statements);
+      });
 
-    const response = await updateProjectStatus(
-      jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: false }),
-      { params: Promise.resolve({ id: String(projectId) }) },
-    );
-    batchSpy.mockRestore();
+      const response = await updateProjectStatus(
+        jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: false }),
+        { params: Promise.resolve({ id: String(projectId) }) },
+      );
 
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: 'project_status_changed' });
-    const statusAudits = (await audits()).filter((audit) => audit.action === 'project.disable');
-    expect(statusAudits).toHaveLength(1);
-    expect(statusAudits[0]).toMatchObject({
-      result: 'failure', failureCode: 'project_status_changed',
-    });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'project_status_changed' });
+      const statusAudits = (await audits()).filter((audit) => audit.action === 'project.disable');
+      expect(statusAudits).toHaveLength(1);
+      expect(statusAudits[0]).toMatchObject({
+        result: 'failure', failureCode: 'project_status_changed',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('全量排序原子更新目录顺序，并为每个项目保存排序快照', async () => {
