@@ -1,6 +1,6 @@
 /// @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ProjectAdminManager from '../app/admin/project-admin-manager';
@@ -128,6 +128,7 @@ describe('全局项目维护 UI', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('action=project.create');
     expect(screen.getByText('管理员（admin@example.com）')).toBeTruthy();
     expect(screen.getByText('成功')).toBeTruthy();
+    expect(screen.getByText('2026-09-01 18:00:00')).toBeTruthy();
   });
 
   it('停用项目不显示当前必然返回 404 的日志管理链接', () => {
@@ -138,6 +139,49 @@ describe('全局项目维护 UI', () => {
 
     expect(screen.queryByRole('link', { name: '进入 海华项目 日志管理' })).toBeNull();
     expect(screen.getByText('项目已停用，恢复后可进入日志管理')).toBeTruthy();
+  });
+
+  it('同排序值项目改名后按服务端规则重排本地目录位置', async () => {
+    const tiedProjects = [
+      { ...projects[0], name: 'Alpha', slug: 'alpha', displayOrder: 0 },
+      { ...projects[1], name: 'Beta', slug: 'beta', displayOrder: 0 },
+    ];
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      project: { ...tiedProjects[0], name: 'Zulu' },
+    }));
+    render(<ProjectAdminManager initialProjects={tiedProjects} initialAudits={[]} />);
+
+    await userEvent.click(screen.getByRole('button', { name: '保存 Alpha 项目资料' }));
+
+    await waitFor(() => {
+      const articles = screen.getAllByRole('article');
+      expect(within(articles[0]).getByLabelText('Beta 项目名称')).toBeTruthy();
+      expect(within(articles[1]).getByLabelText('Zulu 项目名称')).toBeTruthy();
+    });
+  });
+
+  it('可以用游标继续加载更早的审计记录', async () => {
+    const olderAudit = {
+      ...audits[0],
+      id: 2,
+      projectName: '更早项目',
+      createdAt: '2026-08-31T10:00:00.000Z',
+    };
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      audits: [olderAudit], nextCursor: null, hasMore: false,
+    }));
+    render(<ProjectAdminManager
+      initialProjects={projects}
+      initialAudits={audits}
+      initialAuditCursor="older-cursor"
+      initialAuditHasMore
+    />);
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更早审计' }));
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/admin/project-audits?cursor=older-cursor', undefined);
+    expect(await screen.findByText('更早项目')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '加载更早审计' })).toBeNull();
   });
 });
 

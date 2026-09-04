@@ -10,6 +10,8 @@ import type {
 type Props = {
   initialProjects: AdminProject[];
   initialAudits: ProjectAdminAudit[];
+  initialAuditCursor?: string | null;
+  initialAuditHasMore?: boolean;
 };
 
 type ProjectDraft = { name: string; description: string };
@@ -20,9 +22,17 @@ const ACTION_LABELS: Record<ProjectAdminAction, string> = {
   'project.reorder': '调整排序',
 };
 
-export default function ProjectAdminManager({ initialProjects, initialAudits }: Props) {
+export default function ProjectAdminManager({
+  initialProjects,
+  initialAudits,
+  initialAuditCursor = null,
+  initialAuditHasMore = false,
+}: Props) {
   const [projects, setProjects] = useState(initialProjects);
   const [audits, setAudits] = useState(initialAudits);
+  const [auditCursor, setAuditCursor] = useState(initialAuditCursor);
+  const [auditHasMore, setAuditHasMore] = useState(initialAuditHasMore);
+  const [auditQuery, setAuditQuery] = useState('');
   const [drafts, setDrafts] = useState<Record<number, ProjectDraft>>(() =>
     Object.fromEntries(initialProjects.map((project) => [
       project.id,
@@ -68,9 +78,9 @@ export default function ProjectAdminManager({ initialProjects, initialAudits }: 
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(draft),
       });
-      setProjects((current) => current.map((item) =>
+      setProjects((current) => sortProjects(current.map((item) =>
         item.id === result.project.id ? result.project : item,
-      ));
+      )));
       setDrafts((current) => ({
         ...current,
         [result.project.id]: {
@@ -107,11 +117,35 @@ export default function ProjectAdminManager({ initialProjects, initialAudits }: 
       if (value) params.set(key, value);
     }
     await run(async () => {
-      const result = await request<{ audits: ProjectAdminAudit[] }>(
+      const result = await request<{
+        audits: ProjectAdminAudit[];
+        nextCursor?: string | null;
+        hasMore?: boolean;
+      }>(
         `/api/admin/project-audits?${params}`,
       );
       setAudits(result.audits);
+      setAuditCursor(result.nextCursor ?? null);
+      setAuditHasMore(Boolean(result.hasMore));
+      setAuditQuery(params.toString());
       setMessage(`已加载 ${result.audits.length} 条审计记录。`);
+    });
+  }
+
+  async function loadMoreAudits() {
+    if (!auditCursor) return;
+    const params = new URLSearchParams(auditQuery);
+    params.set('cursor', auditCursor);
+    await run(async () => {
+      const result = await request<{
+        audits: ProjectAdminAudit[];
+        nextCursor: string | null;
+        hasMore: boolean;
+      }>(`/api/admin/project-audits?${params}`);
+      setAudits((current) => [...current, ...result.audits]);
+      setAuditCursor(result.nextCursor);
+      setAuditHasMore(result.hasMore);
+      setMessage(`已追加 ${result.audits.length} 条更早的审计记录。`);
     });
   }
 
@@ -261,6 +295,11 @@ export default function ProjectAdminManager({ initialProjects, initialAudits }: 
             </article>
           ))}
           {!audits.length && <p className="rounded-2xl border border-dashed border-[#cbd8cc] p-6 text-center text-sm text-[#6b7a71]">没有符合条件的审计记录。</p>}
+          {auditHasMore && auditCursor && (
+            <button type="button" disabled={busy} onClick={loadMoreAudits} className="w-full rounded-xl border border-[#bfcfc1] px-4 py-3 text-sm font-bold text-[#245d46] disabled:opacity-50">
+              加载更早审计
+            </button>
+          )}
         </div>
       </section>
 
@@ -304,5 +343,17 @@ function prettySnapshot(value: string): string {
 
 function formatAuditTime(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN');
+  if (Number.isNaN(date.getTime())) return value;
+  const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const parts = [
+    beijing.getUTCFullYear(),
+    beijing.getUTCMonth() + 1,
+    beijing.getUTCDate(),
+    beijing.getUTCHours(),
+    beijing.getUTCMinutes(),
+    beijing.getUTCSeconds(),
+  ];
+  const [year, ...rest] = parts;
+  const padded = rest.map((part) => String(part).padStart(2, '0'));
+  return `${year}-${padded[0]}-${padded[1]} ${padded[2]}:${padded[3]}:${padded[4]}`;
 }

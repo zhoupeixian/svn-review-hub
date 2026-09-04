@@ -308,6 +308,34 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     ));
     expect(((await afterProjectDeletion.json()) as { audits: unknown[] }).audits).toHaveLength(2);
   });
+
+  it('审计使用稳定游标分页，超过单页上限的历史记录仍全部可达', async () => {
+    await DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 1
+         UNION ALL
+         SELECT value + 1 FROM sequence WHERE value < 205
+       )
+       INSERT INTO project_admin_audits
+         (project_id_snapshot, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, admin_user_id, admin_email_snapshot,
+          admin_display_name_snapshot, action, result, failure_code, created_at)
+       SELECT 1, 'zherp', 'ZHERP', '{}', 'admin-1', 'admin@example.com',
+              '管理员', 'project.update', 'success', NULL,
+              '2026-09-01T10:00:00.000Z'
+       FROM sequence`,
+    ).run();
+
+    const first = await auditPage('');
+    const second = await auditPage(`?cursor=${encodeURIComponent(first.nextCursor ?? '')}`);
+    const third = await auditPage(`?cursor=${encodeURIComponent(second.nextCursor ?? '')}`);
+    const ids = [...first.audits, ...second.audits, ...third.audits].map((audit) => audit.id);
+
+    expect([first.audits.length, second.audits.length, third.audits.length]).toEqual([100, 100, 5]);
+    expect([first.hasMore, second.hasMore, third.hasMore]).toEqual([true, true, false]);
+    expect(new Set(ids).size).toBe(205);
+    expect(ids).toEqual([...ids].sort((left, right) => right - left));
+  });
 });
 
 function jsonRequest(path: string, method: string, body: unknown): Request {
@@ -359,4 +387,20 @@ async function projectOrder(): Promise<Array<{ id: number; displayOrder: number 
     'SELECT id, display_order AS displayOrder FROM review_projects ORDER BY id',
   ).all<{ id: number; displayOrder: number }>();
   return result.results ?? [];
+}
+
+async function auditPage(search: string): Promise<{
+  audits: Array<{ id: number }>;
+  nextCursor: string | null;
+  hasMore: boolean;
+}> {
+  const response = await getAudits(new Request(
+    `https://example.test/api/admin/project-audits${search}`,
+  ));
+  expect(response.status).toBe(200);
+  return response.json() as Promise<{
+    audits: Array<{ id: number }>;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }>;
 }

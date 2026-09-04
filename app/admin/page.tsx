@@ -2,7 +2,7 @@ import { requireChatGPTUser } from '@/app/chatgpt-auth';
 import ProjectAdminManager from '@/app/admin/project-admin-manager';
 import {
   listAdminProjects,
-  listProjectAdminAudits,
+  getProjectAdminAuditPage,
 } from '@/lib/project-administration';
 import { allowAdministrator } from '@/lib/reviews';
 
@@ -25,9 +25,9 @@ export default async function GlobalAdminPage() {
     );
   }
 
-  const [projects, audits] = await Promise.all([
+  const [projects, auditPage] = await Promise.all([
     listAdminProjects(),
-    listProjectAdminAudits(new URL('https://app.local/api/admin/project-audits')),
+    getProjectAdminAuditPage(new URL('https://app.local/api/admin/project-audits')),
   ]);
 
   return (
@@ -39,7 +39,12 @@ export default async function GlobalAdminPage() {
         </div>
       </header>
       <div className="mx-auto max-w-6xl px-5 py-10 sm:px-8">
-        <ProjectAdminManager initialProjects={projects} initialAudits={audits} />
+        <ProjectAdminManager
+          initialProjects={projects}
+          initialAudits={auditPage.audits}
+          initialAuditCursor={auditPage.nextCursor}
+          initialAuditHasMore={auditPage.hasMore}
+        />
       </div>
     </main>
   );

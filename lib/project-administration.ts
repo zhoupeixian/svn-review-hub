@@ -39,6 +39,12 @@ export type ProjectAdminAudit = {
   createdAt: string;
 };
 
+export type ProjectAdminAuditPage = {
+  audits: ProjectAdminAudit[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
 type StoredProject = Omit<AdminProject, 'enabled'> & { enabled: number };
 
 type AuditInput = {
@@ -293,15 +299,16 @@ export async function reorderAdminProjects(
   return listAdminProjects();
 }
 
-export async function listProjectAdminAudits(
+export async function getProjectAdminAuditPage(
   url: URL,
-): Promise<ProjectAdminAudit[]> {
+): Promise<ProjectAdminAuditPage> {
   await ensureReviewSchema();
   const conditions: string[] = [];
   const values: SqlValue[] = [];
   const projectSlug = url.searchParams.get('projectSlug')?.trim() ?? '';
   const adminUserId = url.searchParams.get('adminUserId')?.trim() ?? '';
   const action = url.searchParams.get('action')?.trim() ?? '';
+  const cursorValue = url.searchParams.get('cursor')?.trim() ?? '';
 
   if (projectSlug) {
     conditions.push('project_slug_snapshot = ?');
@@ -318,6 +325,11 @@ export async function listProjectAdminAudits(
     conditions.push('action = ?');
     values.push(action);
   }
+  if (cursorValue) {
+    const cursor = decodeAuditCursor(cursorValue);
+    conditions.push('(created_at < ? OR (created_at = ? AND id < ?))');
+    values.push(cursor.createdAt, cursor.createdAt, cursor.id);
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await db().prepare(
@@ -333,9 +345,17 @@ export async function listProjectAdminAudits(
      FROM project_admin_audits
      ${where}
      ORDER BY created_at DESC, id DESC
-     LIMIT 200`,
+     LIMIT 101`,
   ).bind(...values).all<ProjectAdminAudit>();
-  return result.results ?? [];
+  const rows = result.results ?? [];
+  const audits = rows.slice(0, 100);
+  const hasMore = rows.length > audits.length;
+  const last = hasMore ? audits.at(-1) : null;
+  return {
+    audits,
+    nextCursor: last ? encodeAuditCursor(last) : null,
+    hasMore,
+  };
 }
 
 type CreateProjectInput = {
@@ -479,6 +499,27 @@ function projectOrderCandidate(input: unknown, projects: AdminProject[]): unknow
     ? (input as Record<string, unknown>).projectIds
     : undefined;
   return { requestedProjectIds, projects };
+}
+
+function encodeAuditCursor(audit: Pick<ProjectAdminAudit, 'createdAt' | 'id'>): string {
+  return btoa(JSON.stringify({ createdAt: audit.createdAt, id: audit.id }));
+}
+
+function decodeAuditCursor(value: string): { createdAt: string; id: number } {
+  try {
+    const decoded = JSON.parse(atob(value)) as { createdAt?: unknown; id?: unknown };
+    if (
+      typeof decoded.createdAt !== 'string' ||
+      !decoded.createdAt ||
+      !Number.isSafeInteger(decoded.id) ||
+      Number(decoded.id) <= 0
+    ) {
+      throw new Error('invalid cursor');
+    }
+    return { createdAt: decoded.createdAt, id: Number(decoded.id) };
+  } catch {
+    throw new ProjectAdminError('审计游标无效。', 'invalid_audit_cursor', 400);
+  }
 }
 
 function auditProjectSelectStatement(
