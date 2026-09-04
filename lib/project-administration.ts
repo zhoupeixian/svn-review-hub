@@ -558,7 +558,7 @@ function auditProjectIdSelectStatement(
   action: ProjectAdminAction,
   createdAt: string,
   projectId: number,
-  projectSetGuard: { sql: string; values: number[] },
+  projectSetGuard: { sql: string; values: SqlValue[] },
 ): D1PreparedStatement {
   return db().prepare(
     `INSERT INTO project_admin_audits
@@ -584,15 +584,16 @@ function auditProjectIdSelectStatement(
 
 function currentProjectSetGuard(projectIds: number[]): {
   sql: string;
-  values: number[];
+  values: SqlValue[];
 } {
-  const placeholders = projectIds.map(() => '?').join(',');
+  const projectIdsJson = JSON.stringify(projectIds);
   return {
-    sql: `(SELECT COUNT(*) FROM review_projects) = ?
+    sql: `(SELECT COUNT(*) FROM review_projects) = json_array_length(?)
           AND NOT EXISTS (
-            SELECT 1 FROM review_projects WHERE id NOT IN (${placeholders})
+            SELECT 1 FROM review_projects
+            WHERE id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
           )`,
-    values: [projectIds.length, ...projectIds],
+    values: [projectIdsJson, projectIdsJson],
   };
 }
 

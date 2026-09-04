@@ -160,6 +160,25 @@ describe('全局项目维护 UI', () => {
     });
   });
 
+  it('同排序值项目按 SQLite NOCASE 规则排列非 ASCII 名称', async () => {
+    const tiedProjects = [
+      { ...projects[0], name: 'Alpha', slug: 'alpha', displayOrder: 0 },
+      { ...projects[1], name: 'Zulu', slug: 'zulu', displayOrder: 0 },
+    ];
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      project: { ...tiedProjects[0], name: 'Éclair' },
+    }));
+    render(<ProjectAdminManager initialProjects={tiedProjects} initialAudits={[]} />);
+
+    await userEvent.click(screen.getByRole('button', { name: '保存 Alpha 项目资料' }));
+
+    await waitFor(() => {
+      const articles = screen.getAllByRole('article');
+      expect(within(articles[0]).getByLabelText('Zulu 项目名称')).toBeTruthy();
+      expect(within(articles[1]).getByLabelText('Éclair 项目名称')).toBeTruthy();
+    });
+  });
+
   it('可以用游标继续加载更早的审计记录', async () => {
     const olderAudit = {
       ...audits[0],

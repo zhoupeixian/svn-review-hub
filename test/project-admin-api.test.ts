@@ -201,6 +201,30 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     expect(reorderAudits.map((audit) => audit.projectSlug).sort()).toEqual(['finance', 'haihua', 'zherp']);
   });
 
+  it('项目数量达到 D1 参数上限附近时仍可全量排序', async () => {
+    await DB.prepare(
+      `WITH RECURSIVE sequence(value) AS (
+         SELECT 2
+         UNION ALL
+         SELECT value + 1 FROM sequence WHERE value < 94
+       )
+       INSERT INTO review_projects
+         (name, slug, description, display_order, enabled)
+       SELECT '项目' || value, 'project-' || value, '', value * 10, 1
+       FROM sequence`,
+    ).run();
+    const ids = (await projectOrder()).map((project) => project.id).reverse();
+
+    const response = await reorderProjects(jsonRequest('/api/admin/projects/order', 'PUT', {
+      projectIds: ids,
+    }));
+
+    expect(response.status).toBe(200);
+    expect((await projectOrder()).map((project) => project.displayOrder)).toEqual(
+      Array.from({ length: 94 }, (_, index) => (93 - index) * 10),
+    );
+  });
+
   it('排序写入前项目全集变化时原子拒绝，不写成功审计或部分顺序', async () => {
     const haihua = await createProjectAndId('海华项目', 'haihua', 10);
     const batch = DB.batch.bind(DB);

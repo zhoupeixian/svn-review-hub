@@ -22,6 +22,8 @@ const ACTION_LABELS: Record<ProjectAdminAction, string> = {
   'project.reorder': '调整排序',
 };
 
+const UTF8_ENCODER = new TextEncoder();
+
 export default function ProjectAdminManager({
   initialProjects,
   initialAudits,
@@ -329,8 +331,24 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
 
 function sortProjects(projects: AdminProject[]): AdminProject[] {
   return [...projects].sort((left, right) =>
-    left.displayOrder - right.displayOrder || left.name.localeCompare(right.name) || left.id - right.id,
+    left.displayOrder - right.displayOrder || compareSqliteNoCase(left.name, right.name) || left.id - right.id,
   );
+}
+
+function compareSqliteNoCase(left: string, right: string): number {
+  const leftBytes = UTF8_ENCODER.encode(left);
+  const rightBytes = UTF8_ENCODER.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftByte = asciiLowerByte(leftBytes[index]);
+    const rightByte = asciiLowerByte(rightBytes[index]);
+    if (leftByte !== rightByte) return leftByte - rightByte;
+  }
+  return leftBytes.length - rightBytes.length;
+}
+
+function asciiLowerByte(value: number): number {
+  return value >= 65 && value <= 90 ? value + 32 : value;
 }
 
 function prettySnapshot(value: string): string {
