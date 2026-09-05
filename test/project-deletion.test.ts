@@ -175,6 +175,100 @@ describe.sequential('永久删除停用项目', () => {
     expect(await recreated.json()).toMatchObject({ project: { name: '海华项目', slug: 'haihua' } });
   });
 
+  it('同一项目并发删除时只有持有删除权的请求可以清理 R2', async () => {
+    const seeded = await seedDeletionProject();
+    let releaseFirstDelete!: () => void;
+    let markFirstDeleteStarted!: () => void;
+    const firstDeleteStarted = new Promise<void>((resolve) => {
+      markFirstDeleteStarted = resolve;
+    });
+    const firstDeleteRelease = new Promise<void>((resolve) => {
+      releaseFirstDelete = resolve;
+    });
+    const deleteSpy = vi.spyOn(FILES, 'delete').mockImplementationOnce(async (keys) => {
+      markFirstDeleteStarted();
+      await firstDeleteRelease;
+      return FILES.delete(keys);
+    });
+
+    const firstRequest = deleteProject(
+      jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(seeded.projectId),
+    );
+    await firstDeleteStarted;
+    const secondResponse = await deleteProject(
+      jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(seeded.projectId),
+    );
+    releaseFirstDelete();
+    const firstResponse = await firstRequest;
+    deleteSpy.mockRestore();
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(409);
+    expect(await secondResponse.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+  });
+
+  it('删除升级前默认项目时也会统计并清理日志行引用的旧版 R2 对象键', async () => {
+    const imported = await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      ingestInput('legacy/default.md', '旧版默认项目日志'),
+    );
+    const stored = await DB.prepare(
+      'SELECT content_object_key AS contentObjectKey FROM review_logs WHERE id = ?',
+    ).bind(imported.id).first<{ contentObjectKey: string }>();
+    const legacyObjectKey = 'review-logs/2026-09-04/legacy-default.md';
+    await FILES.put(legacyObjectKey, '升级前原始日志');
+    await FILES.delete(stored!.contentObjectKey);
+    await DB.prepare('UPDATE review_logs SET content_object_key = ? WHERE id = ?')
+      .bind(legacyObjectKey, imported.id).run();
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 1').run();
+
+    const preview = await previewProjectDeletion(new Request('https://example.test'), context(1));
+    const deleted = await deleteProject(
+      jsonRequest('/api/admin/projects/1/deletion', 'DELETE', { projectName: 'ZHERP' }),
+      context(1),
+    );
+
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({ counts: { rawObjectCount: 1 } });
+    expect(deleted.status).toBe(200);
+    expect(await FILES.head(legacyObjectKey)).toBeNull();
+  });
+
+  it('旧版对象键仍被其他项目引用时不会跨项目删除', async () => {
+    const targetProjectId = await createProjectAndId('海华项目', 'haihua');
+    const otherProjectId = await createProjectAndId('财务项目', 'finance');
+    const targetReview = await ingestReviewForProject(
+      { id: targetProjectId, slug: 'haihua' },
+      ingestInput('legacy/target.md', '目标日志'),
+    );
+    const otherReview = await ingestReviewForProject(
+      { id: otherProjectId, slug: 'finance' },
+      ingestInput('legacy/other.md', '保留日志'),
+    );
+    const stored = await DB.prepare(
+      `SELECT id, content_object_key AS contentObjectKey FROM review_logs
+       WHERE id IN (?, ?) ORDER BY id`,
+    ).bind(targetReview.id, otherReview.id).all<{ id: number; contentObjectKey: string }>();
+    const sharedLegacyKey = 'review-logs/2026-09-04/shared-legacy.md';
+    await FILES.put(sharedLegacyKey, '其他项目仍在使用');
+    await FILES.delete(stored.results.map((row) => row.contentObjectKey));
+    await DB.prepare('UPDATE review_logs SET content_object_key = ? WHERE id IN (?, ?)')
+      .bind(sharedLegacyKey, targetReview.id, otherReview.id).run();
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = ?')
+      .bind(targetProjectId).run();
+
+    const deleted = await deleteProject(
+      jsonRequest(`/api/admin/projects/${targetProjectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(targetProjectId),
+    );
+
+    expect(deleted.status).toBe(200);
+    expect(await FILES.head(sharedLegacyKey)).not.toBeNull();
+    expect(await count('review_logs', 'project_id = ?', otherProjectId)).toBe(1);
+  });
+
   it('删除期间已开始的导入在上传结束后仍会清理新建的 R2 对象', async () => {
     const projectId = await createProjectAndId('海华项目', 'haihua');
     let releaseUpload!: () => void;

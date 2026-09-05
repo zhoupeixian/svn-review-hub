@@ -617,7 +617,8 @@ export async function ensureReviewSchema(): Promise<void> {
         'project_slug_snapshot TEXT NOT NULL,',
         'project_name_snapshot TEXT NOT NULL,',
         'project_snapshot_json TEXT NOT NULL,',
-        'started_at TEXT NOT NULL',
+        'started_at TEXT NOT NULL,',
+        'claim_token TEXT',
         ')',
       ].join(' '),
     ];

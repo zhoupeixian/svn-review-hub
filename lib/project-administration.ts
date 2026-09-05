@@ -557,9 +557,41 @@ export async function deleteAdminProject(
     }
   }
 
+  const claimToken = crypto.randomUUID();
+  const claimedOperation = await db().prepare(
+    `UPDATE project_deletion_operations
+     SET claim_token = ?
+     WHERE project_id = ? AND claim_token IS NULL
+     RETURNING project_id AS projectId, project_slug_snapshot AS projectSlug,
+               project_name_snapshot AS projectName,
+               project_snapshot_json AS projectSnapshot`,
+  ).bind(claimToken, projectId).first<StoredDeletionOperation>();
+  if (!claimedOperation) {
+    const error = new ProjectAdminError(
+      '项目正在永久删除，请等待当前操作完成。',
+      'project_deletion_in_progress',
+      409,
+    );
+    await writeAudit(user, {
+      project: {
+        id: operation.projectId,
+        slug: operation.projectSlug,
+        name: operation.projectName,
+      },
+      snapshot: parseStoredSnapshot(operation.projectSnapshot),
+      action: 'project.delete',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  operation = claimedOperation;
+
   try {
-    await deleteProjectObjects(operation.projectSlug);
+    const storedObjectKeys = await projectStoredObjectKeys(projectId);
+    await deleteProjectObjects(operation.projectSlug, storedObjectKeys);
   } catch {
+    await releaseDeletionClaim(projectId, claimToken);
     const error = new ProjectAdminError(
       '原始日志对象清理失败，项目仍保持停用并可安全重试删除。',
       'project_object_cleanup_failed',
@@ -587,17 +619,22 @@ export async function deleteAdminProject(
     ).bind(projectId),
     db().prepare(
       `DELETE FROM review_object_cleanup_queue
-       WHERE object_key GLOB ? AND ready = 1`,
-    ).bind(`review-logs/${operation.projectSlug}/*`),
+       WHERE ready = 1 AND (
+         object_key GLOB ? OR object_key IN (
+           SELECT content_object_key FROM review_logs WHERE project_id = ?
+         )
+       )`,
+    ).bind(`review-logs/${operation.projectSlug}/*`, projectId),
     db().prepare(
       `DELETE FROM review_projects
        WHERE id = ? AND enabled = 0
          AND EXISTS (
            SELECT 1 FROM project_deletion_operations deletion
            WHERE deletion.project_id = review_projects.id
+             AND deletion.claim_token = ?
          )
        RETURNING id`,
-    ).bind(projectId),
+    ).bind(projectId, claimToken),
     db().prepare(
       `INSERT INTO project_admin_audits
          (project_id_snapshot, project_slug_snapshot, project_name_snapshot,
@@ -606,20 +643,24 @@ export async function deleteAdminProject(
        SELECT project_id, project_slug_snapshot, project_name_snapshot,
               project_snapshot_json, ?, ?, ?, 'project.delete', 'success', NULL, ?
        FROM project_deletion_operations
-       WHERE project_id = ? AND changes() = 1
+       WHERE project_id = ? AND claim_token = ? AND changes() = 1
        RETURNING id`,
-    ).bind(user.userId, user.email, user.displayName, now, projectId),
+    ).bind(user.userId, user.email, user.displayName, now, projectId, claimToken),
     db().prepare(
       `DELETE FROM project_deletion_operations
-       WHERE project_id = ? AND changes() = 1
+       WHERE project_id = ? AND claim_token = ? AND changes() = 1
        RETURNING project_id`,
-    ).bind(projectId),
-  ]);
+    ).bind(projectId, claimToken),
+  ]).catch(async (error: unknown) => {
+    await releaseDeletionClaim(projectId, claimToken);
+    throw error;
+  });
   if (
     results[2]?.results?.length !== 1 ||
     results[3]?.results?.length !== 1 ||
     results[4]?.results?.length !== 1
   ) {
+    await releaseDeletionClaim(projectId, claimToken);
     const error = new ProjectAdminError(
       '项目删除状态已变化，请刷新后确认结果。',
       'project_delete_state_changed',
@@ -1084,7 +1125,7 @@ async function projectDeletionCounts(
   projectId: number,
   projectSlug: string,
 ): Promise<ProjectDeletionCounts> {
-  const [stored, rawObjectCount] = await Promise.all([
+  const [stored, storedObjectKeys] = await Promise.all([
     db().prepare(
       `SELECT
          (SELECT COUNT(*) FROM review_logs WHERE project_id = ?) AS reviewCount,
@@ -1098,8 +1139,9 @@ async function projectDeletionCounts(
          (SELECT COUNT(*) FROM review_logs
           WHERE project_id = ? AND archived_at IS NOT NULL) AS archivedReviewCount`,
     ).bind(projectId, projectId, projectId, projectId).first<Omit<ProjectDeletionCounts, 'rawObjectCount'>>(),
-    countProjectObjects(projectSlug),
+    projectStoredObjectKeys(projectId),
   ]);
+  const rawObjectCount = await countProjectObjects(projectSlug, storedObjectKeys);
   return {
     reviewCount: Number(stored?.reviewCount ?? 0),
     issueCount: Number(stored?.issueCount ?? 0),
@@ -1109,24 +1151,63 @@ async function projectDeletionCounts(
   };
 }
 
-async function countProjectObjects(projectSlug: string): Promise<number> {
+async function countProjectObjects(
+  projectSlug: string,
+  storedObjectKeys: string[],
+): Promise<number> {
   let count = 0;
   let cursor: string | undefined;
+  const prefix = projectObjectPrefix(projectSlug);
   do {
-    const page = await files().list({ prefix: projectObjectPrefix(projectSlug), cursor });
+    const page = await files().list({ prefix, cursor });
     count += page.objects.length;
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
+  const legacyObjectKeys = storedObjectKeys.filter((key) => !key.startsWith(prefix));
+  for (let index = 0; index < legacyObjectKeys.length; index += 100) {
+    const page = await Promise.all(
+      legacyObjectKeys.slice(index, index + 100).map((key) => files().head(key)),
+    );
+    count += page.filter(Boolean).length;
+  }
   return count;
 }
 
-async function deleteProjectObjects(projectSlug: string): Promise<void> {
+async function deleteProjectObjects(
+  projectSlug: string,
+  storedObjectKeys: string[],
+): Promise<void> {
   const prefix = projectObjectPrefix(projectSlug);
   while (true) {
     const page = await files().list({ prefix, limit: 1000 });
-    if (!page.objects.length) return;
+    if (!page.objects.length) break;
     await files().delete(page.objects.map((object) => object.key));
   }
+  const legacyObjectKeys = storedObjectKeys.filter((key) => !key.startsWith(prefix));
+  for (let index = 0; index < legacyObjectKeys.length; index += 1000) {
+    await files().delete(legacyObjectKeys.slice(index, index + 1000));
+  }
+}
+
+async function projectStoredObjectKeys(projectId: number): Promise<string[]> {
+  const result = await db().prepare(
+    `SELECT DISTINCT target.content_object_key AS contentObjectKey
+     FROM review_logs target
+     WHERE target.project_id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM review_logs other
+         WHERE other.project_id <> ?
+           AND other.content_object_key = target.content_object_key
+       )`,
+  ).bind(projectId, projectId).all<{ contentObjectKey: string }>();
+  return result.results.map((row) => row.contentObjectKey);
+}
+
+async function releaseDeletionClaim(projectId: number, claimToken: string): Promise<void> {
+  await db().prepare(
+    `UPDATE project_deletion_operations SET claim_token = NULL
+     WHERE project_id = ? AND claim_token = ?`,
+  ).bind(projectId, claimToken).run();
 }
 
 function projectObjectPrefix(projectSlug: string): string {
