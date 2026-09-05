@@ -476,6 +476,72 @@ describe.sequential('永久删除停用项目', () => {
     expect(await FILES.head(sharedLegacyKey)).toBeNull();
   });
 
+  it('项目删除租约活动期间会阻止其他项目替换共享对象键并允许稍后重试', async () => {
+    const targetProjectId = await createProjectAndId('海华项目', 'haihua');
+    const otherProjectId = await createProjectAndId('财务项目', 'finance');
+    const targetReview = await ingestReviewForProject(
+      { id: targetProjectId, slug: 'haihua' },
+      ingestInput('legacy/shared-target.md', '待删除共享日志'),
+    );
+    const otherSourceKey = 'legacy/shared-other.md';
+    const otherReview = await ingestReviewForProject(
+      { id: otherProjectId, slug: 'finance' },
+      ingestInput(otherSourceKey, '保留共享日志'),
+    );
+    const stored = await DB.prepare(
+      `SELECT content_object_key AS contentObjectKey FROM review_logs
+       WHERE id IN (?, ?)`,
+    ).bind(targetReview.id, otherReview.id).all<{ contentObjectKey: string }>();
+    const sharedLegacyKey = 'review-logs/2026-09-05/shared-replacement.md';
+    await FILES.put(sharedLegacyKey, '两个项目共同引用');
+    await FILES.delete(stored.results.map((row) => row.contentObjectKey));
+    await DB.prepare('UPDATE review_logs SET content_object_key = ? WHERE id IN (?, ?)')
+      .bind(sharedLegacyKey, targetReview.id, otherReview.id).run();
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = ?')
+      .bind(targetProjectId).run();
+    await deletionOperationInsert(targetProjectId, 'haihua', '海华项目').run();
+
+    const originalList = FILES.list.bind(FILES);
+    let releaseDeletionList!: () => void;
+    let markDeletionListStarted!: () => void;
+    const deletionListStarted = new Promise<void>((resolve) => {
+      markDeletionListStarted = resolve;
+    });
+    const deletionListRelease = new Promise<void>((resolve) => {
+      releaseDeletionList = resolve;
+    });
+    const listSpy = vi.spyOn(FILES, 'list').mockImplementationOnce(async (options) => {
+      markDeletionListStarted();
+      await deletionListRelease;
+      return originalList(options);
+    });
+    const deletion = deleteProject(
+      jsonRequest(`/api/admin/projects/${targetProjectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(targetProjectId),
+    );
+    await deletionListStarted;
+    const overlappingIngestion = ingestReviewForProject(
+      { id: otherProjectId, slug: 'finance' },
+      ingestInput(otherSourceKey, '替换后的共享日志'),
+    );
+    const rejectedIngestion = expect(overlappingIngestion).rejects.toThrow('日志未写入');
+    await rejectedIngestion;
+    releaseDeletionList();
+    const deleted = await deletion;
+    listSpy.mockRestore();
+
+    expect(deleted.status).toBe(200);
+    expect(await (await FILES.get(sharedLegacyKey))?.text()).toBe('两个项目共同引用');
+
+    const retried = await ingestReviewForProject(
+      { id: otherProjectId, slug: 'finance' },
+      ingestInput(otherSourceKey, '替换后的共享日志'),
+    );
+
+    expect(retried.title).toBe('替换后的共享日志');
+    expect(await FILES.head(sharedLegacyKey)).toBeNull();
+  });
+
   it('删除 Worker 中断后可以接管已过期的清理租约继续删除', async () => {
     const seeded = await seedDeletionProject();
     await DB.prepare(

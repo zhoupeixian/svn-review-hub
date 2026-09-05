@@ -1811,6 +1811,8 @@ export async function ingestReviewForProject(
         'p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at, updated_at',
         ') SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?',
         'FROM review_projects WHERE id = ? AND slug = ? AND enabled = 1',
+        'AND NOT EXISTS (SELECT 1 FROM project_deletion_operations',
+        'WHERE claim_token IS NOT NULL AND claim_expires_at > ?)',
         'ON CONFLICT(project_id, source_key) DO UPDATE SET',
         'log_date = excluded.log_date, source_name = excluded.source_name,',
         'source_hash = excluded.source_hash, content_object_key = excluded.content_object_key,',
@@ -1844,20 +1846,29 @@ export async function ingestReviewForProject(
       now,
       projectId,
       storedProject.slug,
+      now,
       existing?.contentObjectKey ?? null,
     ),
     DB.prepare(
       `DELETE FROM review_revisions
        WHERE review_id = (SELECT id FROM review_logs
                           WHERE project_id = ? AND source_key = ? AND content_object_key = ?)
-         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
-    ).bind(projectId, sourceKey, contentObjectKey, projectId),
+         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)
+         AND NOT EXISTS (
+           SELECT 1 FROM project_deletion_operations
+           WHERE claim_token IS NOT NULL AND claim_expires_at > ?
+         )`,
+    ).bind(projectId, sourceKey, contentObjectKey, projectId, now),
     DB.prepare(
       `UPDATE review_issues SET source_current = 0
        WHERE review_id = (SELECT id FROM review_logs
                           WHERE project_id = ? AND source_key = ? AND content_object_key = ?)
-         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
-    ).bind(projectId, sourceKey, contentObjectKey, projectId),
+         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)
+         AND NOT EXISTS (
+           SELECT 1 FROM project_deletion_operations
+           WHERE claim_token IS NOT NULL AND claim_expires_at > ?
+         )`,
+    ).bind(projectId, sourceKey, contentObjectKey, projectId, now),
     ...parsed.revisions.map((revision) =>
       DB.prepare(
         [
@@ -1867,6 +1878,8 @@ export async function ingestReviewForProject(
           'JOIN review_projects p ON p.id = l.project_id',
           'WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?',
           'AND p.enabled = 1',
+          'AND NOT EXISTS (SELECT 1 FROM project_deletion_operations',
+          'WHERE claim_token IS NOT NULL AND claim_expires_at > ?)',
         ].join(' '),
       ).bind(
         revision.revision,
@@ -1877,6 +1890,7 @@ export async function ingestReviewForProject(
         projectId,
         sourceKey,
         contentObjectKey,
+        now,
       ),
     ),
     ...currentIssues.map(([issueKey, issue]) =>
@@ -1889,6 +1903,8 @@ export async function ingestReviewForProject(
           'FROM review_logs l JOIN review_projects p ON p.id = l.project_id',
           'WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?',
           'AND p.enabled = 1',
+          'AND NOT EXISTS (SELECT 1 FROM project_deletion_operations',
+          'WHERE claim_token IS NOT NULL AND claim_expires_at > ?)',
           'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
           'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
           'related_revisions = excluded.related_revisions, detail = excluded.detail,',
@@ -1903,6 +1919,7 @@ export async function ingestReviewForProject(
         projectId,
         sourceKey,
         contentObjectKey,
+        now,
       ),
     ),
     ...(existing && existing.contentObjectKey !== contentObjectKey
@@ -1913,8 +1930,11 @@ export async function ingestReviewForProject(
              WHERE EXISTS (
                SELECT 1 FROM review_logs
                WHERE project_id = ? AND source_key = ? AND content_object_key = ?
+             ) AND NOT EXISTS (
+               SELECT 1 FROM project_deletion_operations
+               WHERE claim_token IS NOT NULL AND claim_expires_at > ?
              )`,
-          ).bind(existing.contentObjectKey, now, projectId, sourceKey, contentObjectKey),
+          ).bind(existing.contentObjectKey, now, projectId, sourceKey, contentObjectKey, now),
         ]
       : []),
     ...(createdContentObject
@@ -1925,16 +1945,23 @@ export async function ingestReviewForProject(
                AND EXISTS (
                  SELECT 1 FROM review_logs
                  WHERE project_id = ? AND source_key = ? AND content_object_key = ?
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM project_deletion_operations
+                 WHERE claim_token IS NOT NULL AND claim_expires_at > ?
                )`,
-          ).bind(contentObjectKey, projectId, sourceKey, contentObjectKey),
+          ).bind(contentObjectKey, projectId, sourceKey, contentObjectKey, now),
         ]
       : []),
     DB.prepare(
       `SELECT l.id FROM review_logs l
        JOIN review_projects p ON p.id = l.project_id
        WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?
-         AND p.slug = ? AND p.enabled = 1`,
-    ).bind(projectId, sourceKey, contentObjectKey, storedProject.slug),
+         AND p.slug = ? AND p.enabled = 1
+         AND NOT EXISTS (
+           SELECT 1 FROM project_deletion_operations
+           WHERE claim_token IS NOT NULL AND claim_expires_at > ?
+         )`,
+    ).bind(projectId, sourceKey, contentObjectKey, storedProject.slug, now),
   ];
 
   let results: D1Result[];
