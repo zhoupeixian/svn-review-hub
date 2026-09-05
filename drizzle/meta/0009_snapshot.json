@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "fbb58fee-d17b-43e4-af93-fe51b0f8dacb",
-  "prevId": "8e1f3004-f1e7-455c-8cbd-97cc71d94f35",
+  "id": "3396472c-b9f0-4239-a158-9c28d87ab0fa",
+  "prevId": "fbb58fee-d17b-43e4-af93-fe51b0f8dacb",
   "tables": {
     "admin_users": {
       "name": "admin_users",
@@ -319,6 +319,20 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "claim_expires_at": {
+          "name": "claim_expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         }
       },

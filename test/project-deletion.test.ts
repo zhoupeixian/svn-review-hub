@@ -209,6 +209,57 @@ describe.sequential('永久删除停用项目', () => {
     expect(await secondResponse.json()).toMatchObject({ code: 'project_deletion_in_progress' });
   });
 
+  it('租约被接管后陈旧请求会在删除前停止且不影响复用 slug 的新项目', async () => {
+    const seeded = await seedDeletionProject();
+    await DB.prepare(
+      `INSERT INTO project_deletion_operations
+         (project_id, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, started_at)
+       VALUES (?, 'haihua', '海华项目', '{}', '2026-09-05T00:00:00.000Z')`,
+    ).bind(seeded.projectId).run();
+    const originalList = FILES.list.bind(FILES);
+    let releaseStaleList!: () => void;
+    let markStaleListStarted!: () => void;
+    const staleListStarted = new Promise<void>((resolve) => {
+      markStaleListStarted = resolve;
+    });
+    const staleListRelease = new Promise<void>((resolve) => {
+      releaseStaleList = resolve;
+    });
+    const listSpy = vi.spyOn(FILES, 'list').mockImplementationOnce(async (options) => {
+      markStaleListStarted();
+      await staleListRelease;
+      return originalList(options);
+    });
+
+    const staleRequest = deleteProject(
+      jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(seeded.projectId),
+    );
+    await staleListStarted;
+    await DB.prepare(
+      `UPDATE project_deletion_operations
+       SET claim_expires_at = '2026-09-01T00:00:00.000Z'
+       WHERE project_id = ?`,
+    ).bind(seeded.projectId).run();
+    const takeoverResponse = await deleteProject(
+      jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(seeded.projectId),
+    );
+    const recreated = await createProjectAndId('海华项目', 'haihua');
+    const newObjectKey = 'review-logs/haihua/new-project.md';
+    await FILES.put(newObjectKey, '新项目对象');
+    releaseStaleList();
+    const staleResponse = await staleRequest;
+    listSpy.mockRestore();
+
+    expect(takeoverResponse.status).toBe(200);
+    expect(staleResponse.status).toBe(409);
+    expect(await staleResponse.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(await projectRow(recreated)).toMatchObject({ name: '海华项目' });
+    expect(await (await FILES.get(newObjectKey))?.text()).toBe('新项目对象');
+  });
+
   it('删除升级前默认项目时也会统计并清理日志行引用的旧版 R2 对象键', async () => {
     const imported = await ingestReviewForProject(
       { id: 1, slug: 'zherp' },
@@ -274,8 +325,9 @@ describe.sequential('永久删除停用项目', () => {
     await DB.prepare(
       `INSERT INTO project_deletion_operations
          (project_id, project_slug_snapshot, project_name_snapshot,
-          project_snapshot_json, started_at, claim_token)
-       VALUES (?, 'haihua', '海华项目', '{}', '2026-09-01T00:00:00.000Z', 'abandoned-worker')`,
+          project_snapshot_json, started_at, claim_token, claim_expires_at)
+       VALUES (?, 'haihua', '海华项目', '{}', '2026-09-01T00:00:00.000Z',
+               'abandoned-worker', '2026-09-01T00:05:00.000Z')`,
     ).bind(seeded.projectId).run();
 
     const retried = await deleteProject(

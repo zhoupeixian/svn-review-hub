@@ -64,6 +64,13 @@
       "when": 1788537462928,
       "tag": "0008_glossy_talos",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788612795378,
+      "tag": "0009_silly_nicolaos",
+      "breakpoints": true
     }
   ]
 }
