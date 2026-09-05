@@ -388,6 +388,94 @@ describe.sequential('永久删除停用项目', () => {
     expect(await FILES.head(sharedLegacyKey)).toBeNull();
   });
 
+  it('其他项目接管全局租约后会阻止过期 Worker 重新续租', async () => {
+    const firstProjectId = await createProjectAndId('海华项目', 'haihua');
+    const secondProjectId = await createProjectAndId('财务项目', 'finance');
+    const firstReview = await ingestReviewForProject(
+      { id: firstProjectId, slug: 'haihua' },
+      ingestInput('legacy/expired-first.md', '过期项目日志'),
+    );
+    const secondReview = await ingestReviewForProject(
+      { id: secondProjectId, slug: 'finance' },
+      ingestInput('legacy/takeover-second.md', '接管项目日志'),
+    );
+    const stored = await DB.prepare(
+      `SELECT content_object_key AS contentObjectKey FROM review_logs
+       WHERE id IN (?, ?)`,
+    ).bind(firstReview.id, secondReview.id).all<{ contentObjectKey: string }>();
+    const sharedLegacyKey = 'review-logs/2026-09-05/shared-takeover.md';
+    await FILES.put(sharedLegacyKey, '仅由最后一个项目删除');
+    await FILES.delete(stored.results.map((row) => row.contentObjectKey));
+    await DB.prepare('UPDATE review_logs SET content_object_key = ? WHERE id IN (?, ?)')
+      .bind(sharedLegacyKey, firstReview.id, secondReview.id).run();
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id IN (?, ?)')
+      .bind(firstProjectId, secondProjectId).run();
+    await DB.batch([
+      deletionOperationInsert(firstProjectId, 'haihua', '海华项目'),
+      deletionOperationInsert(secondProjectId, 'finance', '财务项目'),
+    ]);
+
+    const originalList = FILES.list.bind(FILES);
+    let releaseExpiredList!: () => void;
+    let releaseTakeoverList!: () => void;
+    let markExpiredListStarted!: () => void;
+    let markTakeoverListStarted!: () => void;
+    const expiredListStarted = new Promise<void>((resolve) => {
+      markExpiredListStarted = resolve;
+    });
+    const takeoverListStarted = new Promise<void>((resolve) => {
+      markTakeoverListStarted = resolve;
+    });
+    const expiredListRelease = new Promise<void>((resolve) => {
+      releaseExpiredList = resolve;
+    });
+    const takeoverListRelease = new Promise<void>((resolve) => {
+      releaseTakeoverList = resolve;
+    });
+    const listSpy = vi.spyOn(FILES, 'list')
+      .mockImplementationOnce(async (options) => {
+        markExpiredListStarted();
+        await expiredListRelease;
+        return originalList(options);
+      })
+      .mockImplementationOnce(async (options) => {
+        markTakeoverListStarted();
+        await takeoverListRelease;
+        return originalList(options);
+      });
+    const expiredDeletion = deleteProject(
+      jsonRequest(`/api/admin/projects/${firstProjectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(firstProjectId),
+    );
+    await expiredListStarted;
+    await DB.prepare(
+      `UPDATE project_deletion_operations
+       SET claim_expires_at = '2026-09-01T00:00:00.000Z'
+       WHERE project_id = ?`,
+    ).bind(firstProjectId).run();
+    const takeoverDeletion = deleteProject(
+      jsonRequest(`/api/admin/projects/${secondProjectId}/deletion`, 'DELETE', { projectName: '财务项目' }),
+      context(secondProjectId),
+    );
+    await takeoverListStarted;
+
+    releaseExpiredList();
+    const expiredResponse = await expiredDeletion;
+    releaseTakeoverList();
+    const takeoverResponse = await takeoverDeletion;
+    listSpy.mockRestore();
+    const retriedDeletion = await deleteProject(
+      jsonRequest(`/api/admin/projects/${firstProjectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(firstProjectId),
+    );
+
+    expect(expiredResponse.status).toBe(409);
+    expect(await expiredResponse.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(takeoverResponse.status).toBe(200);
+    expect(retriedDeletion.status).toBe(200);
+    expect(await FILES.head(sharedLegacyKey)).toBeNull();
+  });
+
   it('删除 Worker 中断后可以接管已过期的清理租约继续删除', async () => {
     const seeded = await seedDeletionProject();
     await DB.prepare(
@@ -606,6 +694,15 @@ async function createProjectAndId(name: string, slug: string): Promise<number> {
 
 function context(projectId: number) {
   return { params: Promise.resolve({ id: String(projectId) }) };
+}
+
+function deletionOperationInsert(projectId: number, slug: string, name: string): D1PreparedStatement {
+  return DB.prepare(
+    `INSERT INTO project_deletion_operations
+       (project_id, project_slug_snapshot, project_name_snapshot,
+        project_snapshot_json, started_at)
+     VALUES (?, ?, ?, '{}', '2026-09-05T00:00:00.000Z')`,
+  ).bind(projectId, slug, name);
 }
 
 function jsonRequest(path: string, method: string, body: unknown): Request {

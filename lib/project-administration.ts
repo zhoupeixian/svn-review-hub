@@ -1283,11 +1283,23 @@ async function protectedProjectObjectKeys(
 }
 
 async function renewDeletionClaim(projectId: number, claimToken: string): Promise<void> {
+  const renewedAt = new Date().toISOString();
   const result = await db().prepare(
     `UPDATE project_deletion_operations SET claim_expires_at = ?
      WHERE project_id = ? AND claim_token = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM project_deletion_operations other
+         WHERE other.project_id <> project_deletion_operations.project_id
+           AND other.claim_token IS NOT NULL
+           AND other.claim_expires_at > ?
+       )
      RETURNING project_id`,
-  ).bind(deletionClaimExpiry(), projectId, claimToken).first<{ projectId: number }>();
+  ).bind(
+    deletionClaimExpiry(renewedAt),
+    projectId,
+    claimToken,
+    renewedAt,
+  ).first<{ projectId: number }>();
   if (!result) {
     throw new ProjectAdminError(
       '项目删除租约已被其他请求接管，请等待当前操作完成。',
