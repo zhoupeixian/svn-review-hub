@@ -566,6 +566,12 @@ export async function deleteAdminProject(
      WHERE project_id = ? AND (
        claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= ?
      )
+       AND NOT EXISTS (
+         SELECT 1 FROM project_deletion_operations other
+         WHERE other.project_id <> project_deletion_operations.project_id
+           AND other.claim_token IS NOT NULL
+           AND other.claim_expires_at > ?
+       )
      RETURNING project_id AS projectId, project_slug_snapshot AS projectSlug,
                project_name_snapshot AS projectName,
                project_snapshot_json AS projectSnapshot`,
@@ -573,6 +579,7 @@ export async function deleteAdminProject(
     claimToken,
     deletionClaimExpiry(claimStartedAt),
     projectId,
+    claimStartedAt,
     claimStartedAt,
   ).first<StoredDeletionOperation>();
   if (!claimedOperation) {

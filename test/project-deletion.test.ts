@@ -320,6 +320,74 @@ describe.sequential('永久删除停用项目', () => {
     expect(await count('review_logs', 'project_id = ?', otherProjectId)).toBe(1);
   });
 
+  it('共享旧版对象键的两个项目并发删除时会串行重算归属并最终清理对象', async () => {
+    const firstProjectId = await createProjectAndId('海华项目', 'haihua');
+    const secondProjectId = await createProjectAndId('财务项目', 'finance');
+    const firstReview = await ingestReviewForProject(
+      { id: firstProjectId, slug: 'haihua' },
+      ingestInput('legacy/first.md', '第一项目日志'),
+    );
+    const secondReview = await ingestReviewForProject(
+      { id: secondProjectId, slug: 'finance' },
+      ingestInput('legacy/second.md', '第二项目日志'),
+    );
+    const stored = await DB.prepare(
+      `SELECT content_object_key AS contentObjectKey FROM review_logs
+       WHERE id IN (?, ?)`,
+    ).bind(firstReview.id, secondReview.id).all<{ contentObjectKey: string }>();
+    const sharedLegacyKey = 'review-logs/2026-09-05/shared-delete.md';
+    await FILES.put(sharedLegacyKey, '等待最后一个项目删除');
+    await FILES.delete(stored.results.map((row) => row.contentObjectKey));
+    await DB.prepare('UPDATE review_logs SET content_object_key = ? WHERE id IN (?, ?)')
+      .bind(sharedLegacyKey, firstReview.id, secondReview.id).run();
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id IN (?, ?)')
+      .bind(firstProjectId, secondProjectId).run();
+    await DB.prepare(
+      `INSERT INTO project_deletion_operations
+         (project_id, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, started_at)
+       VALUES (?, 'haihua', '海华项目', '{}', '2026-09-05T00:00:00.000Z')`,
+    ).bind(firstProjectId).run();
+
+    const originalList = FILES.list.bind(FILES);
+    let releaseFirstList!: () => void;
+    let markFirstListStarted!: () => void;
+    const firstListStarted = new Promise<void>((resolve) => {
+      markFirstListStarted = resolve;
+    });
+    const firstListRelease = new Promise<void>((resolve) => {
+      releaseFirstList = resolve;
+    });
+    const listSpy = vi.spyOn(FILES, 'list').mockImplementationOnce(async (options) => {
+      markFirstListStarted();
+      await firstListRelease;
+      return originalList(options);
+    });
+    const firstDeletion = deleteProject(
+      jsonRequest(`/api/admin/projects/${firstProjectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(firstProjectId),
+    );
+    await firstListStarted;
+
+    const overlappingDeletion = await deleteProject(
+      jsonRequest(`/api/admin/projects/${secondProjectId}/deletion`, 'DELETE', { projectName: '财务项目' }),
+      context(secondProjectId),
+    );
+    releaseFirstList();
+    const firstResponse = await firstDeletion;
+    listSpy.mockRestore();
+    const retriedDeletion = await deleteProject(
+      jsonRequest(`/api/admin/projects/${secondProjectId}/deletion`, 'DELETE', { projectName: '财务项目' }),
+      context(secondProjectId),
+    );
+
+    expect(overlappingDeletion.status).toBe(409);
+    expect(await overlappingDeletion.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(firstResponse.status).toBe(200);
+    expect(retriedDeletion.status).toBe(200);
+    expect(await FILES.head(sharedLegacyKey)).toBeNull();
+  });
+
   it('删除 Worker 中断后可以接管已过期的清理租约继续删除', async () => {
     const seeded = await seedDeletionProject();
     await DB.prepare(
