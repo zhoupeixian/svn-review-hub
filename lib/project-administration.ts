@@ -8,7 +8,7 @@ import {
   maskProjectSyncKey,
 } from '@/lib/reviews';
 
-type RuntimeEnv = { DB: D1Database; REVIEW_SYNC_KEY?: string };
+type RuntimeEnv = { DB: D1Database; FILES: R2Bucket; REVIEW_SYNC_KEY?: string };
 type SqlValue = string | number | null;
 
 export const PROJECT_ADMIN_ACTIONS = [
@@ -19,6 +19,7 @@ export const PROJECT_ADMIN_ACTIONS = [
   'project.restore',
   'project.sync-key.copy',
   'project.sync-key.rotate',
+  'project.delete',
 ] as const;
 
 export type ProjectAdminAction = (typeof PROJECT_ADMIN_ACTIONS)[number];
@@ -30,6 +31,7 @@ export type AdminProject = {
   description: string;
   displayOrder: number;
   enabled: boolean;
+  deletionInProgress: boolean;
   syncKeyMasked: string;
   createdAt: string;
   updatedAt: string;
@@ -56,9 +58,23 @@ export type ProjectAdminAuditPage = {
   hasMore: boolean;
 };
 
-type StoredProject = Omit<AdminProject, 'enabled' | 'syncKeyMasked'> & {
+type StoredProject = Omit<AdminProject, 'enabled' | 'deletionInProgress' | 'syncKeyMasked'> & {
   enabled: number;
+  deletionInProgress: number;
   syncKeyEncrypted: string | null;
+};
+
+export type ProjectDeletionCounts = {
+  reviewCount: number;
+  issueCount: number;
+  issueEventCount: number;
+  archivedReviewCount: number;
+  rawObjectCount: number;
+};
+
+export type ProjectDeletionPreview = {
+  project: AdminProject;
+  counts: ProjectDeletionCounts;
 };
 
 type AuditInput = {
@@ -67,6 +83,13 @@ type AuditInput = {
   action: ProjectAdminAction;
   result: 'success' | 'failure';
   failureCode?: string | null;
+};
+
+type StoredDeletionOperation = {
+  projectId: number;
+  projectSlug: string;
+  projectName: string;
+  projectSnapshot: string;
 };
 
 const PROJECT_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -99,8 +122,14 @@ function db(): D1Database {
   return value;
 }
 
+function files(): R2Bucket {
+  const value = (env as unknown as RuntimeEnv).FILES;
+  if (!value) throw new Error('审查站的原文存储尚未连接。');
+  return value;
+}
+
 async function adminProject(row: StoredProject): Promise<AdminProject> {
-  const { syncKeyEncrypted, enabled, ...project } = row;
+  const { syncKeyEncrypted, enabled, deletionInProgress, ...project } = row;
   let syncKeyMasked = '不可用';
   if (syncKeyEncrypted) {
     try {
@@ -114,6 +143,7 @@ async function adminProject(row: StoredProject): Promise<AdminProject> {
   return {
     ...project,
     enabled: enabled === 1,
+    deletionInProgress: deletionInProgress === 1,
     syncKeyMasked,
   };
 }
@@ -121,6 +151,8 @@ async function adminProject(row: StoredProject): Promise<AdminProject> {
 function projectSelect(): string {
   return `SELECT id, name, slug, description, display_order AS displayOrder,
                  enabled, sync_key_encrypted AS syncKeyEncrypted,
+                 EXISTS(SELECT 1 FROM project_deletion_operations deletion
+                        WHERE deletion.project_id = review_projects.id) AS deletionInProgress,
                  created_at AS createdAt, updated_at AS updatedAt
           FROM review_projects`;
 }
@@ -243,6 +275,21 @@ export async function updateAdminProject(
     });
     throw error;
   }
+  if (existing.deletionInProgress) {
+    const error = new ProjectAdminError(
+      '项目正在永久删除，不能再编辑资料。请重试删除或联系站点维护人员。',
+      'project_deletion_in_progress',
+      409,
+    );
+    await writeAudit(user, {
+      project: existing,
+      snapshot: projectSnapshot(existing),
+      action: 'project.update',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
 
   let candidate: UpdateProjectInput;
   try {
@@ -328,6 +375,21 @@ export async function setAdminProjectEnabled(
     });
     throw error;
   }
+  if (enabled && existing.deletionInProgress) {
+    const error = new ProjectAdminError(
+      '项目正在永久删除，不能恢复。请重试删除或联系站点维护人员。',
+      'project_deletion_in_progress',
+      409,
+    );
+    await writeAudit(user, {
+      project: existing,
+      snapshot: projectSnapshot(existing),
+      action,
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
 
   const now = new Date().toISOString();
   const target = enabled ? 1 : 0;
@@ -335,7 +397,11 @@ export async function setAdminProjectEnabled(
   const results = await db().batch([
     db().prepare(
       `UPDATE review_projects SET enabled = ?, updated_at = ?
-       WHERE id = ? AND enabled = ? AND updated_at = ?`,
+       WHERE id = ? AND enabled = ? AND updated_at = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM project_deletion_operations deletion
+           WHERE deletion.project_id = review_projects.id
+         )`,
     ).bind(target, now, projectId, current, existing.updatedAt),
     auditProjectStatusSelectStatement(user, action, now, projectId, target),
   ]);
@@ -360,6 +426,202 @@ export async function setAdminProjectEnabled(
   const updated = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
   if (!updated) throw new Error('项目状态已更新，但无法读取更新结果。');
   return updated;
+}
+
+export async function previewAdminProjectDeletion(
+  projectId: number,
+): Promise<ProjectDeletionPreview> {
+  await ensureReviewSchema();
+  const project = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+  if (!project) {
+    throw new ProjectAdminError('审查项目不存在。', 'project_not_found', 404);
+  }
+  if (project.enabled) {
+    throw new ProjectAdminError(
+      '请先停用项目，再预览永久删除影响。',
+      'project_delete_requires_disabled',
+      409,
+    );
+  }
+  return {
+    project,
+    counts: await projectDeletionCounts(project.id, project.slug),
+  };
+}
+
+export async function deleteAdminProject(
+  user: ChatGPTUser,
+  projectId: number,
+  input: unknown,
+): Promise<{ deletedProject: { name: string; slug: string }; counts: ProjectDeletionCounts }> {
+  await ensureReviewSchema();
+  const projectName = parseDeleteProjectName(input);
+  const project = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+  if (!project) {
+    const error = new ProjectAdminError('审查项目不存在。', 'project_not_found', 404);
+    await writeAudit(user, {
+      project: { id: projectId },
+      snapshot: { id: projectId },
+      action: 'project.delete',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  if (project.enabled) {
+    const error = new ProjectAdminError(
+      '只有已停用项目可以永久删除。',
+      'project_delete_requires_disabled',
+      409,
+    );
+    await writeAudit(user, {
+      project,
+      snapshot: projectSnapshot(project),
+      action: 'project.delete',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  if (projectName !== project.name) {
+    const error = new ProjectAdminError(
+      '输入的项目名称与完整项目名称不一致。',
+      'project_delete_name_mismatch',
+      400,
+    );
+    await writeAudit(user, {
+      project,
+      snapshot: projectSnapshot(project),
+      action: 'project.delete',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+
+  let operation = await deletionOperation(projectId);
+  if (!operation) {
+    const counts = await projectDeletionCounts(project.id, project.slug);
+    const snapshot = JSON.stringify({ ...projectSnapshot(project), counts });
+    await db().prepare(
+      `INSERT OR IGNORE INTO project_deletion_operations
+         (project_id, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, started_at)
+       SELECT id, slug, name, ?, ? FROM review_projects
+       WHERE id = ? AND enabled = 0 AND name = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM project_deletion_operations deletion
+           WHERE deletion.project_id = review_projects.id
+         )`,
+    ).bind(snapshot, new Date().toISOString(), projectId, projectName).run();
+    operation = await deletionOperation(projectId);
+    if (!operation) {
+      const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+      const error = new ProjectAdminError(
+        '项目状态或名称已变化，请刷新后重新预览。',
+        'project_delete_state_changed',
+        409,
+      );
+      await writeAudit(user, {
+        project: latest ?? project,
+        snapshot: projectSnapshot(latest ?? project),
+        action: 'project.delete',
+        result: 'failure',
+        failureCode: error.code,
+      });
+      throw error;
+    }
+  }
+
+  try {
+    await deleteProjectObjects(operation.projectSlug);
+  } catch {
+    const error = new ProjectAdminError(
+      '原始日志对象清理失败，项目仍保持停用并可安全重试删除。',
+      'project_object_cleanup_failed',
+      503,
+    );
+    await writeAudit(user, {
+      project: {
+        id: operation.projectId,
+        slug: operation.projectSlug,
+        name: operation.projectName,
+      },
+      snapshot: parseStoredSnapshot(operation.projectSnapshot),
+      action: 'project.delete',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const results = await db().batch([
+    db().prepare(
+      `DELETE FROM archive_operation_previews
+       WHERE EXISTS (
+         SELECT 1 FROM json_each(archive_operation_previews.review_ids_json) selected
+         JOIN review_logs review ON review.id = CAST(selected.value AS INTEGER)
+         WHERE review.project_id = ?
+       )`,
+    ).bind(projectId),
+    db().prepare(
+      `DELETE FROM review_projects
+       WHERE id = ? AND enabled = 0
+         AND EXISTS (
+           SELECT 1 FROM project_deletion_operations deletion
+           WHERE deletion.project_id = review_projects.id
+         )
+       RETURNING id`,
+    ).bind(projectId),
+    db().prepare(
+      `INSERT INTO project_admin_audits
+         (project_id_snapshot, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, admin_user_id, admin_email_snapshot,
+          admin_display_name_snapshot, action, result, failure_code, created_at)
+       SELECT project_id, project_slug_snapshot, project_name_snapshot,
+              project_snapshot_json, ?, ?, ?, 'project.delete', 'success', NULL, ?
+       FROM project_deletion_operations
+       WHERE project_id = ? AND changes() = 1
+       RETURNING id`,
+    ).bind(user.userId, user.email, user.displayName, now, projectId),
+    db().prepare(
+      `DELETE FROM project_deletion_operations
+       WHERE project_id = ? AND changes() = 1
+       RETURNING project_id`,
+    ).bind(projectId),
+  ]);
+  if (
+    results[1]?.results?.length !== 1 ||
+    results[2]?.results?.length !== 1 ||
+    results[3]?.results?.length !== 1
+  ) {
+    const error = new ProjectAdminError(
+      '项目删除状态已变化，请刷新后确认结果。',
+      'project_delete_state_changed',
+      409,
+    );
+    await writeAudit(user, {
+      project: {
+        id: operation.projectId,
+        slug: operation.projectSlug,
+        name: operation.projectName,
+      },
+      snapshot: parseStoredSnapshot(operation.projectSnapshot),
+      action: 'project.delete',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+
+  const snapshot = parseStoredSnapshot(operation.projectSnapshot) as {
+    counts?: ProjectDeletionCounts;
+  };
+  return {
+    deletedProject: { name: operation.projectName, slug: operation.projectSlug },
+    counts: snapshot.counts ?? emptyDeletionCounts(),
+  };
 }
 
 export async function copyAdminProjectSyncKey(
@@ -654,6 +916,22 @@ function parseEnabledStatus(input: unknown): boolean {
   return record.enabled;
 }
 
+function parseDeleteProjectName(input: unknown): string {
+  const record = objectInput(input);
+  if (
+    typeof record.projectName !== 'string' ||
+    !record.projectName ||
+    Object.keys(record).some((key) => key !== 'projectName')
+  ) {
+    throw new ProjectAdminError(
+      '请输入完整项目名称以确认永久删除。',
+      'invalid_project_delete_confirmation',
+      400,
+    );
+  }
+  return record.projectName;
+}
+
 function objectInput(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ProjectAdminError('请求内容必须是对象。', 'invalid_request', 400);
@@ -743,6 +1021,99 @@ function projectOrderCandidate(input: unknown, projects: AdminProject[]): unknow
     ? (input as Record<string, unknown>).projectIds
     : undefined;
   return { requestedProjectIds, projects };
+}
+
+function projectSnapshot(project: AdminProject): Record<string, unknown> {
+  return {
+    id: project.id,
+    name: project.name,
+    slug: project.slug,
+    description: project.description,
+    displayOrder: project.displayOrder,
+    enabled: project.enabled,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+  };
+}
+
+async function deletionOperation(projectId: number): Promise<StoredDeletionOperation | null> {
+  return db().prepare(
+    `SELECT project_id AS projectId, project_slug_snapshot AS projectSlug,
+            project_name_snapshot AS projectName,
+            project_snapshot_json AS projectSnapshot
+     FROM project_deletion_operations WHERE project_id = ?`,
+  ).bind(projectId).first<StoredDeletionOperation>();
+}
+
+async function projectDeletionCounts(
+  projectId: number,
+  projectSlug: string,
+): Promise<ProjectDeletionCounts> {
+  const [stored, rawObjectCount] = await Promise.all([
+    db().prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM review_logs WHERE project_id = ?) AS reviewCount,
+         (SELECT COUNT(*) FROM review_issues issue
+          JOIN review_logs review ON review.id = issue.review_id
+          WHERE review.project_id = ?) AS issueCount,
+         (SELECT COUNT(*) FROM review_issue_events event
+          JOIN review_issues issue ON issue.id = event.issue_id
+          JOIN review_logs review ON review.id = issue.review_id
+          WHERE review.project_id = ?) AS issueEventCount,
+         (SELECT COUNT(*) FROM review_logs
+          WHERE project_id = ? AND archived_at IS NOT NULL) AS archivedReviewCount`,
+    ).bind(projectId, projectId, projectId, projectId).first<Omit<ProjectDeletionCounts, 'rawObjectCount'>>(),
+    countProjectObjects(projectSlug),
+  ]);
+  return {
+    reviewCount: Number(stored?.reviewCount ?? 0),
+    issueCount: Number(stored?.issueCount ?? 0),
+    issueEventCount: Number(stored?.issueEventCount ?? 0),
+    archivedReviewCount: Number(stored?.archivedReviewCount ?? 0),
+    rawObjectCount,
+  };
+}
+
+async function countProjectObjects(projectSlug: string): Promise<number> {
+  let count = 0;
+  let cursor: string | undefined;
+  do {
+    const page = await files().list({ prefix: projectObjectPrefix(projectSlug), cursor });
+    count += page.objects.length;
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return count;
+}
+
+async function deleteProjectObjects(projectSlug: string): Promise<void> {
+  const prefix = projectObjectPrefix(projectSlug);
+  while (true) {
+    const page = await files().list({ prefix, limit: 1000 });
+    if (!page.objects.length) return;
+    await files().delete(page.objects.map((object) => object.key));
+  }
+}
+
+function projectObjectPrefix(projectSlug: string): string {
+  return `review-logs/${projectSlug}/`;
+}
+
+function parseStoredSnapshot(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function emptyDeletionCounts(): ProjectDeletionCounts {
+  return {
+    reviewCount: 0,
+    issueCount: 0,
+    issueEventCount: 0,
+    archivedReviewCount: 0,
+    rawObjectCount: 0,
+  };
 }
 
 function encodeAuditCursor(audit: Pick<ProjectAdminAudit, 'createdAt' | 'id'>): string {

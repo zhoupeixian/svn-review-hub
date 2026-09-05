@@ -611,6 +611,15 @@ export async function ensureReviewSchema(): Promise<void> {
         'ready INTEGER NOT NULL DEFAULT 1',
         ')',
       ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS project_deletion_operations (',
+        'project_id INTEGER PRIMARY KEY,',
+        'project_slug_snapshot TEXT NOT NULL,',
+        'project_name_snapshot TEXT NOT NULL,',
+        'project_snapshot_json TEXT NOT NULL,',
+        'started_at TEXT NOT NULL',
+        ')',
+      ].join(' '),
     ];
 
     await DB.batch(

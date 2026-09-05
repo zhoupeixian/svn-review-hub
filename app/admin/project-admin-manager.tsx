@@ -5,6 +5,7 @@ import type {
   AdminProject,
   ProjectAdminAction,
   ProjectAdminAudit,
+  ProjectDeletionCounts,
 } from '@/lib/project-administration';
 
 type Props = {
@@ -15,6 +16,11 @@ type Props = {
 };
 
 type ProjectDraft = { name: string; description: string };
+type DeletionDialog = {
+  project: AdminProject;
+  counts: ProjectDeletionCounts;
+  confirmation: string;
+};
 
 const ACTION_LABELS: Record<ProjectAdminAction, string> = {
   'project.create': '创建项目',
@@ -24,6 +30,7 @@ const ACTION_LABELS: Record<ProjectAdminAction, string> = {
   'project.restore': '恢复项目',
   'project.sync-key.copy': '复制同步密钥',
   'project.sync-key.rotate': '轮换同步密钥',
+  'project.delete': '永久删除项目',
 };
 
 const UTF8_ENCODER = new TextEncoder();
@@ -47,6 +54,7 @@ export default function ProjectAdminManager({
   );
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [deletionDialog, setDeletionDialog] = useState<DeletionDialog | null>(null);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -163,6 +171,41 @@ export default function ProjectAdminManager({
     });
   }
 
+  async function previewProjectDeletion(project: AdminProject) {
+    await run(async () => {
+      const result = await request<{
+        project: AdminProject;
+        counts: ProjectDeletionCounts;
+      }>(`/api/admin/projects/${project.id}/deletion`, { method: 'GET' });
+      setDeletionDialog({
+        project: result.project,
+        counts: result.counts,
+        confirmation: '',
+      });
+    });
+  }
+
+  async function confirmProjectDeletion() {
+    if (!deletionDialog || deletionDialog.confirmation !== deletionDialog.project.name) return;
+    const { project, confirmation } = deletionDialog;
+    await run(async () => {
+      await request<{ deletedProject: { name: string; slug: string } }>(
+        `/api/admin/projects/${project.id}/deletion`,
+        {
+          method: 'DELETE',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ projectName: confirmation }),
+        },
+      );
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+      setDrafts((current) => Object.fromEntries(
+        Object.entries(current).filter(([id]) => Number(id) !== project.id),
+      ));
+      setDeletionDialog(null);
+      setMessage(`已永久删除项目 ${project.name}。`);
+    });
+  }
+
   async function filterAudits(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -249,7 +292,9 @@ export default function ProjectAdminManager({
                 <div>
                   <p className="text-xs font-bold text-[#748278]">目录位置 {index + 1}</p>
                   <p className="mt-1 text-lg font-black text-[#28503c]">{project.name}</p>
-                  <p className="mt-1 text-xs font-bold text-[#718077]">{project.enabled ? '启用中' : '已停用'}</p>
+                  <p className="mt-1 text-xs font-bold text-[#718077]">
+                    {project.deletionInProgress ? '永久删除待重试' : project.enabled ? '启用中' : '已停用'}
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" disabled={busy || index === 0} onClick={() => moveProject(index, -1)} className="rounded-lg border border-[#cddace] px-3 py-2 text-xs font-bold disabled:opacity-40">
@@ -317,7 +362,7 @@ export default function ProjectAdminManager({
                 </a>
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || project.deletionInProgress}
                   onClick={() => setProjectEnabled(project, !project.enabled)}
                   className={project.enabled
                     ? 'rounded-xl border border-[#d7b9ae] px-4 py-2.5 text-sm font-bold text-[#8a4331] disabled:opacity-50'
@@ -325,6 +370,18 @@ export default function ProjectAdminManager({
                 >
                   {project.enabled ? `停用 ${project.name}` : `恢复 ${project.name}`}
                 </button>
+                {!project.enabled && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => previewProjectDeletion(project)}
+                    className="rounded-xl border border-[#b43b2b] bg-[#fff7f4] px-4 py-2.5 text-sm font-black text-[#9b2d22] disabled:opacity-50"
+                  >
+                    {project.deletionInProgress
+                      ? `重试永久删除 ${project.name}`
+                      : `预览永久删除 ${project.name}`}
+                  </button>
+                )}
               </div>
             </article>
           );
@@ -377,6 +434,60 @@ export default function ProjectAdminManager({
       </section>
 
       {message && <p role="status" className="rounded-xl border border-[#cbd9cc] bg-[#eef5ee] px-4 py-3 text-sm font-bold text-[#28533e]">{message}</p>}
+
+      {deletionDialog && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-[#10271dcc] p-4">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={`永久删除 ${deletionDialog.project.name}`}
+            className="w-full max-w-xl rounded-3xl border border-[#efc6bc] bg-white p-6 shadow-2xl sm:p-8"
+          >
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a23b2d]">不可撤销操作</p>
+            <h2 className="mt-2 text-2xl font-black text-[#4f241e]">永久删除 {deletionDialog.project.name}</h2>
+            <p className="mt-3 text-sm leading-6 text-[#76534d]">
+              删除后项目资料、同步密钥及以下全部业务数据都无法恢复，项目操作审计会保留。
+            </p>
+            <ul className="mt-5 grid gap-2 rounded-2xl bg-[#fff4f0] p-4 text-sm font-bold text-[#713d35] sm:grid-cols-2">
+              <li>日志 {deletionDialog.counts.reviewCount}</li>
+              <li>问题 {deletionDialog.counts.issueCount}</li>
+              <li>问题事件 {deletionDialog.counts.issueEventCount}</li>
+              <li>归档记录 {deletionDialog.counts.archivedReviewCount}</li>
+              <li>原始日志对象 {deletionDialog.counts.rawObjectCount}</li>
+            </ul>
+            <label className="mt-5 grid gap-2 text-sm font-bold text-[#5e3932]">
+              输入完整项目名称 {deletionDialog.project.name}
+              <input
+                aria-label={`输入完整项目名称 ${deletionDialog.project.name}`}
+                value={deletionDialog.confirmation}
+                onChange={(event) => setDeletionDialog((current) => current
+                  ? { ...current, confirmation: event.target.value }
+                  : current)}
+                autoComplete="off"
+                className="rounded-xl border border-[#d9a99f] bg-white px-4 py-3 font-normal text-[#321c18]"
+              />
+            </label>
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setDeletionDialog(null)}
+                className="rounded-xl border border-[#cfc1bd] px-4 py-2.5 text-sm font-bold text-[#62524e] disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={busy || deletionDialog.confirmation !== deletionDialog.project.name}
+                onClick={confirmProjectDeletion}
+                className="rounded-xl bg-[#a53225] px-4 py-2.5 text-sm font-black text-white disabled:opacity-40"
+              >
+                永久删除 {deletionDialog.project.name}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
