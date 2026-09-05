@@ -251,7 +251,7 @@ describe.sequential('永久删除停用项目', () => {
       `SELECT id, content_object_key AS contentObjectKey FROM review_logs
        WHERE id IN (?, ?) ORDER BY id`,
     ).bind(targetReview.id, otherReview.id).all<{ id: number; contentObjectKey: string }>();
-    const sharedLegacyKey = 'review-logs/2026-09-04/shared-legacy.md';
+    const sharedLegacyKey = 'review-logs/haihua/shared-legacy.md';
     await FILES.put(sharedLegacyKey, '其他项目仍在使用');
     await FILES.delete(stored.results.map((row) => row.contentObjectKey));
     await DB.prepare('UPDATE review_logs SET content_object_key = ? WHERE id IN (?, ?)')
@@ -267,6 +267,25 @@ describe.sequential('永久删除停用项目', () => {
     expect(deleted.status).toBe(200);
     expect(await FILES.head(sharedLegacyKey)).not.toBeNull();
     expect(await count('review_logs', 'project_id = ?', otherProjectId)).toBe(1);
+  });
+
+  it('删除 Worker 中断后可以接管已过期的清理租约继续删除', async () => {
+    const seeded = await seedDeletionProject();
+    await DB.prepare(
+      `INSERT INTO project_deletion_operations
+         (project_id, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, started_at, claim_token)
+       VALUES (?, 'haihua', '海华项目', '{}', '2026-09-01T00:00:00.000Z', 'abandoned-worker')`,
+    ).bind(seeded.projectId).run();
+
+    const retried = await deleteProject(
+      jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(seeded.projectId),
+    );
+
+    expect(retried.status).toBe(200);
+    expect(await projectRow(seeded.projectId)).toBeNull();
+    expect((await FILES.list({ prefix: 'review-logs/haihua/' })).objects).toEqual([]);
   });
 
   it('删除期间已开始的导入在上传结束后仍会清理新建的 R2 对象', async () => {

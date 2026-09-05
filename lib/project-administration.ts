@@ -104,6 +104,7 @@ const RESERVED_PROJECT_SLUGS = new Set([
   'signin-with-chatgpt',
   'signout-with-chatgpt',
 ]);
+const DELETION_CLAIM_LEASE_MS = 5 * 60 * 1000;
 
 export class ProjectAdminError extends Error {
   constructor(
@@ -558,14 +559,22 @@ export async function deleteAdminProject(
   }
 
   const claimToken = crypto.randomUUID();
+  const claimStartedAt = new Date().toISOString();
   const claimedOperation = await db().prepare(
     `UPDATE project_deletion_operations
-     SET claim_token = ?
-     WHERE project_id = ? AND claim_token IS NULL
+     SET claim_token = ?, claim_expires_at = ?
+     WHERE project_id = ? AND (
+       claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= ?
+     )
      RETURNING project_id AS projectId, project_slug_snapshot AS projectSlug,
                project_name_snapshot AS projectName,
                project_snapshot_json AS projectSnapshot`,
-  ).bind(claimToken, projectId).first<StoredDeletionOperation>();
+  ).bind(
+    claimToken,
+    deletionClaimExpiry(claimStartedAt),
+    projectId,
+    claimStartedAt,
+  ).first<StoredDeletionOperation>();
   if (!claimedOperation) {
     const error = new ProjectAdminError(
       '项目正在永久删除，请等待当前操作完成。',
@@ -588,15 +597,28 @@ export async function deleteAdminProject(
   operation = claimedOperation;
 
   try {
-    const storedObjectKeys = await projectStoredObjectKeys(projectId);
-    await deleteProjectObjects(operation.projectSlug, storedObjectKeys);
-  } catch {
-    await releaseDeletionClaim(projectId, claimToken);
-    const error = new ProjectAdminError(
-      '原始日志对象清理失败，项目仍保持停用并可安全重试删除。',
-      'project_object_cleanup_failed',
-      503,
+    const prefix = projectObjectPrefix(operation.projectSlug);
+    const [storedObjectKeys, protectedObjectKeys] = await Promise.all([
+      projectStoredObjectKeys(projectId),
+      protectedProjectObjectKeys(projectId, prefix),
+    ]);
+    await deleteProjectObjects(
+      projectId,
+      claimToken,
+      operation.projectSlug,
+      storedObjectKeys,
+      protectedObjectKeys,
     );
+    await renewDeletionClaim(projectId, claimToken);
+  } catch (caught) {
+    await releaseDeletionClaim(projectId, claimToken);
+    const error = caught instanceof ProjectAdminError
+      ? caught
+      : new ProjectAdminError(
+        '原始日志对象清理失败，项目仍保持停用并可安全重试删除。',
+        'project_object_cleanup_failed',
+        503,
+      );
     await writeAudit(user, {
       project: {
         id: operation.projectId,
@@ -620,11 +642,27 @@ export async function deleteAdminProject(
     db().prepare(
       `DELETE FROM review_object_cleanup_queue
        WHERE ready = 1 AND (
-         object_key GLOB ? OR object_key IN (
-           SELECT content_object_key FROM review_logs WHERE project_id = ?
+         (
+           object_key GLOB ? AND NOT EXISTS (
+             SELECT 1 FROM review_logs other
+             WHERE other.project_id <> ?
+               AND other.content_object_key = review_object_cleanup_queue.object_key
+           )
+         ) OR object_key IN (
+           SELECT target.content_object_key FROM review_logs target
+           WHERE target.project_id = ? AND NOT EXISTS (
+             SELECT 1 FROM review_logs other
+             WHERE other.project_id <> ?
+               AND other.content_object_key = target.content_object_key
+           )
          )
        )`,
-    ).bind(`review-logs/${operation.projectSlug}/*`, projectId),
+    ).bind(
+      `review-logs/${operation.projectSlug}/*`,
+      projectId,
+      projectId,
+      projectId,
+    ),
     db().prepare(
       `DELETE FROM review_projects
        WHERE id = ? AND enabled = 0
@@ -1125,7 +1163,8 @@ async function projectDeletionCounts(
   projectId: number,
   projectSlug: string,
 ): Promise<ProjectDeletionCounts> {
-  const [stored, storedObjectKeys] = await Promise.all([
+  const prefix = projectObjectPrefix(projectSlug);
+  const [stored, storedObjectKeys, protectedObjectKeys] = await Promise.all([
     db().prepare(
       `SELECT
          (SELECT COUNT(*) FROM review_logs WHERE project_id = ?) AS reviewCount,
@@ -1140,8 +1179,13 @@ async function projectDeletionCounts(
           WHERE project_id = ? AND archived_at IS NOT NULL) AS archivedReviewCount`,
     ).bind(projectId, projectId, projectId, projectId).first<Omit<ProjectDeletionCounts, 'rawObjectCount'>>(),
     projectStoredObjectKeys(projectId),
+    protectedProjectObjectKeys(projectId, prefix),
   ]);
-  const rawObjectCount = await countProjectObjects(projectSlug, storedObjectKeys);
+  const rawObjectCount = await countProjectObjects(
+    projectSlug,
+    storedObjectKeys,
+    protectedObjectKeys,
+  );
   return {
     reviewCount: Number(stored?.reviewCount ?? 0),
     issueCount: Number(stored?.issueCount ?? 0),
@@ -1154,13 +1198,14 @@ async function projectDeletionCounts(
 async function countProjectObjects(
   projectSlug: string,
   storedObjectKeys: string[],
+  protectedObjectKeys: Set<string>,
 ): Promise<number> {
   let count = 0;
   let cursor: string | undefined;
   const prefix = projectObjectPrefix(projectSlug);
   do {
     const page = await files().list({ prefix, cursor });
-    count += page.objects.length;
+    count += page.objects.filter((object) => !protectedObjectKeys.has(object.key)).length;
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
   const legacyObjectKeys = storedObjectKeys.filter((key) => !key.startsWith(prefix));
@@ -1174,17 +1219,32 @@ async function countProjectObjects(
 }
 
 async function deleteProjectObjects(
+  projectId: number,
+  claimToken: string,
   projectSlug: string,
   storedObjectKeys: string[],
+  protectedObjectKeys: Set<string>,
 ): Promise<void> {
   const prefix = projectObjectPrefix(projectSlug);
+  let cursor: string | undefined;
   while (true) {
-    const page = await files().list({ prefix, limit: 1000 });
-    if (!page.objects.length) break;
-    await files().delete(page.objects.map((object) => object.key));
+    await renewDeletionClaim(projectId, claimToken);
+    const page = await files().list({ prefix, cursor, limit: 1000 });
+    const keys = page.objects
+      .map((object) => object.key)
+      .filter((key) => !protectedObjectKeys.has(key));
+    if (keys.length) {
+      await renewDeletionClaim(projectId, claimToken);
+      await files().delete(keys);
+      cursor = undefined;
+      continue;
+    }
+    if (!page.truncated) break;
+    cursor = page.cursor;
   }
   const legacyObjectKeys = storedObjectKeys.filter((key) => !key.startsWith(prefix));
   for (let index = 0; index < legacyObjectKeys.length; index += 1000) {
+    await renewDeletionClaim(projectId, claimToken);
     await files().delete(legacyObjectKeys.slice(index, index + 1000));
   }
 }
@@ -1203,11 +1263,43 @@ async function projectStoredObjectKeys(projectId: number): Promise<string[]> {
   return result.results.map((row) => row.contentObjectKey);
 }
 
+async function protectedProjectObjectKeys(
+  projectId: number,
+  projectPrefix: string,
+): Promise<Set<string>> {
+  const result = await db().prepare(
+    `SELECT DISTINCT content_object_key AS contentObjectKey
+     FROM review_logs
+     WHERE project_id <> ? AND content_object_key GLOB ?`,
+  ).bind(projectId, `${projectPrefix}*`).all<{ contentObjectKey: string }>();
+  return new Set(result.results.map((row) => row.contentObjectKey));
+}
+
+async function renewDeletionClaim(projectId: number, claimToken: string): Promise<void> {
+  const result = await db().prepare(
+    `UPDATE project_deletion_operations SET claim_expires_at = ?
+     WHERE project_id = ? AND claim_token = ?
+     RETURNING project_id`,
+  ).bind(deletionClaimExpiry(), projectId, claimToken).first<{ projectId: number }>();
+  if (!result) {
+    throw new ProjectAdminError(
+      '项目删除租约已被其他请求接管，请等待当前操作完成。',
+      'project_deletion_in_progress',
+      409,
+    );
+  }
+}
+
 async function releaseDeletionClaim(projectId: number, claimToken: string): Promise<void> {
   await db().prepare(
-    `UPDATE project_deletion_operations SET claim_token = NULL
+    `UPDATE project_deletion_operations
+     SET claim_token = NULL, claim_expires_at = NULL
      WHERE project_id = ? AND claim_token = ?`,
-  ).bind(projectId, claimToken).run();
+  ).bind(projectId, claimToken).run().catch(() => undefined);
+}
+
+function deletionClaimExpiry(now = new Date().toISOString()): string {
+  return new Date(Date.parse(now) + DELETION_CLAIM_LEASE_MS).toISOString();
 }
 
 function projectObjectPrefix(projectSlug: string): string {

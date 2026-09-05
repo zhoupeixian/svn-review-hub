@@ -41,6 +41,7 @@ export const projectDeletionOperations = sqliteTable('project_deletion_operation
   projectSnapshotJson: text('project_snapshot_json').notNull(),
   startedAt: text('started_at').notNull(),
   claimToken: text('claim_token'),
+  claimExpiresAt: text('claim_expires_at'),
 });
 
 export const reviewLogs = sqliteTable(
