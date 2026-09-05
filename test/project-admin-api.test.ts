@@ -6,10 +6,12 @@ import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { GET as getAudits } from '../app/api/admin/project-audits/route';
 import { PATCH as updateProject } from '../app/api/admin/projects/[id]/route';
 import { PATCH as updateProjectStatus } from '../app/api/admin/projects/[id]/status/route';
+import { POST as copyProjectSyncKey } from '../app/api/admin/projects/[id]/sync-key/copy/route';
+import { POST as rotateProjectSyncKey } from '../app/api/admin/projects/[id]/sync-key/rotate/route';
 import { PUT as reorderProjects } from '../app/api/admin/projects/order/route';
 import { GET as getProjects, POST as createProject } from '../app/api/admin/projects/route';
 import { projectAdminErrorResponse } from '../lib/global-admin-api';
-import { ensureReviewSchema, getReviewProjectDirectory } from '../lib/reviews';
+import { authorizeProjectSync, ensureReviewSchema, getReviewProjectDirectory } from '../lib/reviews';
 
 let currentUser: ChatGPTUser | null = {
   userId: 'admin-1',
@@ -25,16 +27,23 @@ vi.mock('../app/chatgpt-auth', () => ({
 type TestEnv = {
   DB: D1Database;
   FILES: R2Bucket;
+  REVIEW_SYNC_KEY?: string;
+  REVIEW_SYNC_MASTER_KEY?: string;
 };
 
-const { DB, FILES } = env as unknown as TestEnv;
+const runtime = env as unknown as TestEnv;
+const { DB, FILES } = runtime;
+const MASTER_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 
 describe.sequential('全局审查项目维护与审计 API', () => {
   beforeAll(async () => {
+    runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
     await ensureReviewSchema();
   });
 
   beforeEach(async () => {
+    runtime.REVIEW_SYNC_KEY = undefined;
+    runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
     currentUser = {
       userId: 'admin-1',
       email: 'admin-old@example.com',
@@ -48,7 +57,7 @@ describe.sequential('全局审查项目维护与审计 API', () => {
       DB.prepare('DELETE FROM review_revisions'),
       DB.prepare('DELETE FROM review_logs'),
       DB.prepare('DELETE FROM review_projects WHERE id <> 1'),
-      DB.prepare("UPDATE review_projects SET name = 'ZHERP', slug = 'zherp', description = '', display_order = 0, enabled = 1 WHERE id = 1"),
+      DB.prepare("UPDATE review_projects SET name = 'ZHERP', slug = 'zherp', description = '', display_order = 0, enabled = 1, sync_key_encrypted = NULL WHERE id = 1"),
       DB.prepare('DELETE FROM admin_users'),
       DB.prepare("INSERT INTO admin_users (user_id, email, display_name, created_at) VALUES ('admin-1', 'stored@example.com', '数据库旧名称', '2026-01-01T00:00:00.000Z')"),
     ]);
@@ -111,6 +120,224 @@ describe.sequential('全局审查项目维护与审计 API', () => {
         action: 'project.create', result: 'success', failureCode: null,
       },
     ]);
+  });
+
+  it('为既有项目和新项目生成独立密钥，只在管理 DTO 中返回脱敏片段', async () => {
+    const listed = await getProjects();
+    const existing = (await listed.json()) as {
+      projects: Array<{ id: number; syncKeyMasked: string }>;
+    };
+    const created = await createProject(jsonRequest('/api/admin/projects', 'POST', {
+      name: '海华项目', slug: 'haihua', description: '', displayOrder: 10,
+    }));
+    const createdBody = await created.json() as {
+      project: { id: number; syncKeyMasked: string };
+    };
+    const rows = await DB.prepare(
+      'SELECT id, sync_key_encrypted AS encrypted FROM review_projects ORDER BY id',
+    ).all<{ id: number; encrypted: string | null }>();
+
+    expect(existing.projects[0].syncKeyMasked).toMatch(/^.{3}\*\*\*.{4}$/);
+    expect(createdBody.project.syncKeyMasked).toMatch(/^.{3}\*\*\*.{4}$/);
+    expect(rows.results).toHaveLength(2);
+    expect(rows.results.every((row) => row.encrypted?.startsWith('v2.'))).toBe(true);
+    expect(new Set(rows.results.map((row) => row.encrypted)).size).toBe(2);
+    expect(JSON.stringify(existing)).not.toContain('sync_key_encrypted');
+    expect(JSON.stringify(createdBody)).not.toContain('syncKeyEncrypted');
+
+    const zherpCopy = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+      params: Promise.resolve({ id: String(existing.projects[0].id) }),
+    });
+    const haihuaCopy = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+      params: Promise.resolve({ id: String(createdBody.project.id) }),
+    });
+    const zherpKey = ((await zherpCopy.json()) as { syncKey: string }).syncKey;
+    const haihuaKey = ((await haihuaCopy.json()) as { syncKey: string }).syncKey;
+    expect(zherpKey).not.toBe(haihuaKey);
+    await expect(authorizeProjectSync('zherp', zherpKey)).resolves.toMatchObject({ id: 1 });
+    await expect(authorizeProjectSync('haihua', haihuaKey)).resolves.toMatchObject({ id: createdBody.project.id });
+    await expect(authorizeProjectSync('haihua', zherpKey)).resolves.toBeNull();
+  });
+
+  it('管理员先打开项目列表时优先保留旧全站同步密钥', async () => {
+    const legacyKey = 'legacy-zherp-sync-key';
+    runtime.REVIEW_SYNC_KEY = legacyKey;
+
+    const response = await getProjects();
+    const body = await response.json() as {
+      projects: Array<{ slug: string; syncKeyMasked: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.projects.find((project) => project.slug === 'zherp')?.syncKeyMasked)
+      .toBe('leg***-key');
+    await expect(authorizeProjectSync('zherp', legacyKey)).resolves.toMatchObject({ id: 1 });
+  });
+
+  it('密钥缺失且主密钥配置错误时仍允许不依赖密钥的项目维护', async () => {
+    runtime.REVIEW_SYNC_MASTER_KEY = 'invalid-master-key';
+
+    const listed = await getProjects();
+    const listedBody = await listed.json() as {
+      projects: Array<{ id: number; syncKeyMasked: string }>;
+    };
+    const updated = await updateProject(jsonRequest('/api/admin/projects/1', 'PATCH', {
+      name: 'ZHERP 更新', description: '不依赖密钥',
+    }), { params: Promise.resolve({ id: '1' }) });
+    const disabled = await updateProjectStatus(jsonRequest('/api/admin/projects/1/status', 'PATCH', {
+      enabled: false,
+    }), { params: Promise.resolve({ id: '1' }) });
+    const reordered = await reorderProjects(jsonRequest('/api/admin/projects/order', 'PUT', {
+      projectIds: [1],
+    }));
+
+    expect(listed.status).toBe(200);
+    expect(listedBody.projects[0].syncKeyMasked).toBe('不可用');
+    expect(updated.status).toBe(200);
+    expect(disabled.status).toBe(200);
+    expect(reordered.status).toBe(200);
+    expect(await audits()).toMatchObject([
+      { action: 'project.reorder', result: 'success' },
+      { action: 'project.disable', result: 'success' },
+      { action: 'project.update', result: 'success' },
+    ]);
+  });
+
+  it('主密钥配置错误时创建项目返回专用错误并记录失败审计', async () => {
+    runtime.REVIEW_SYNC_MASTER_KEY = 'invalid-master-key';
+
+    const response = await createProject(jsonRequest('/api/admin/projects', 'POST', {
+      name: '海华项目', slug: 'haihua', description: '', displayOrder: 10,
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      code: 'project_sync_key_unavailable',
+    });
+    expect(await audits()).toMatchObject([
+      { action: 'project.create', result: 'failure', failureCode: 'project_sync_key_unavailable' },
+    ]);
+  });
+
+  it('复制只在 no-store 响应中返回当前完整密钥并写入无明文审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    const response = await copyProjectSyncKey(new Request(
+      `https://example.test/api/admin/projects/${projectId}/sync-key/copy`,
+      { method: 'POST' },
+    ), { params: Promise.resolve({ id: String(projectId) }) });
+    const body = await response.json() as { syncKey: string; syncKeyMasked: string };
+    const encrypted = await DB.prepare(
+      'SELECT sync_key_encrypted AS value FROM review_projects WHERE id = ?',
+    ).bind(projectId).first<{ value: string }>();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(body.syncKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(body.syncKeyMasked).toBe(`${body.syncKey.slice(0, 3)}***${body.syncKey.slice(-4)}`);
+    expect(encrypted?.value).not.toContain(body.syncKey);
+    const copyAudit = (await audits()).find((audit) => audit.action === 'project.sync-key.copy');
+    expect(copyAudit).toMatchObject({ result: 'success', failureCode: null });
+    expect(JSON.stringify(copyAudit)).not.toContain(body.syncKey);
+    expect(JSON.stringify(copyAudit)).not.toContain(encrypted?.value);
+    expect(await (await FILES.get('sentinel/project-admin.txt'))?.text()).toBe('R2 不应被项目维护修改');
+  });
+
+  it('密文不可解密时拒绝复制并记录不含底层错误或密文的失败审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    await DB.prepare(
+      "UPDATE review_projects SET sync_key_encrypted = 'v2.invalid-ciphertext' WHERE id = ?",
+    ).bind(projectId).run();
+
+    const response = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+      params: Promise.resolve({ id: String(projectId) }),
+    });
+    const body = await response.json() as { error: string; code: string };
+    const copyAudit = (await audits()).find((audit) => audit.action === 'project.sync-key.copy');
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      code: 'project_sync_key_unavailable',
+    });
+    expect(copyAudit).toMatchObject({
+      result: 'failure', failureCode: 'project_sync_key_unavailable',
+    });
+    expect(JSON.stringify(copyAudit)).not.toContain('invalid-ciphertext');
+    expect(JSON.stringify(copyAudit)).not.toContain('无法解密');
+  });
+
+  it('复制时缺失密钥且主密钥无效仍写入不泄密的失败审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    await DB.prepare('UPDATE review_projects SET sync_key_encrypted = NULL WHERE id = ?')
+      .bind(projectId).run();
+    runtime.REVIEW_SYNC_MASTER_KEY = 'invalid-master-key';
+    let response: Response;
+    try {
+      response = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+        params: Promise.resolve({ id: String(projectId) }),
+      });
+    } finally {
+      runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
+    }
+
+    expect(response!.status).toBe(409);
+    expect(await response!.json()).toEqual({
+      error: '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      code: 'project_sync_key_unavailable',
+    });
+    const audit = (await audits()).find((entry) => entry.action === 'project.sync-key.copy');
+    expect(audit).toMatchObject({ result: 'failure', failureCode: 'project_sync_key_unavailable' });
+    expect(JSON.stringify(audit)).not.toContain('invalid-master-key');
+  });
+
+  it('轮换时主密钥无效仍写入不泄密的失败审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    runtime.REVIEW_SYNC_MASTER_KEY = 'invalid-master-key';
+    let response: Response;
+    try {
+      response = await rotateProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+        params: Promise.resolve({ id: String(projectId) }),
+      });
+    } finally {
+      runtime.REVIEW_SYNC_MASTER_KEY = MASTER_KEY;
+    }
+
+    expect(response!.status).toBe(409);
+    expect(await response!.json()).toEqual({
+      error: '当前项目同步密钥不可用，请检查站点主密钥配置或轮换密钥。',
+      code: 'project_sync_key_unavailable',
+    });
+    const audit = (await audits()).find((entry) => entry.action === 'project.sync-key.rotate');
+    expect(audit).toMatchObject({ result: 'failure', failureCode: 'project_sync_key_unavailable' });
+    expect(JSON.stringify(audit)).not.toContain('invalid-master-key');
+  });
+
+  it('轮换后旧密钥立即失效，新密钥只可通过再次复制取得', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    const copiedBefore = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+      params: Promise.resolve({ id: String(projectId) }),
+    });
+    const oldKey = ((await copiedBefore.json()) as { syncKey: string }).syncKey;
+    const rotated = await rotateProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+      params: Promise.resolve({ id: String(projectId) }),
+    });
+    const rotatedBody = await rotated.json() as { project: { syncKeyMasked: string } };
+    const copiedAfter = await copyProjectSyncKey(new Request('https://example.test', { method: 'POST' }), {
+      params: Promise.resolve({ id: String(projectId) }),
+    });
+    const newKey = ((await copiedAfter.json()) as { syncKey: string }).syncKey;
+
+    expect(rotated.status).toBe(200);
+    expect(rotatedBody.project.syncKeyMasked).toMatch(/^.{3}\*\*\*.{4}$/);
+    expect(JSON.stringify(rotatedBody)).not.toContain(oldKey);
+    expect(newKey).not.toBe(oldKey);
+    await expect(authorizeProjectSync('haihua', oldKey)).resolves.toBeNull();
+    await expect(authorizeProjectSync('haihua', newKey)).resolves.toMatchObject({ id: projectId });
+    expect((await audits()).filter((audit) => audit.action === 'project.sync-key.rotate'))
+      .toMatchObject([{ result: 'success', failureCode: null }]);
+    expect(JSON.stringify(await audits())).not.toContain(oldKey);
+    expect(JSON.stringify(await audits())).not.toContain(newKey);
   });
 
   it.each([

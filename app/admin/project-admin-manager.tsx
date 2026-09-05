@@ -22,6 +22,8 @@ const ACTION_LABELS: Record<ProjectAdminAction, string> = {
   'project.reorder': '调整排序',
   'project.disable': '停用项目',
   'project.restore': '恢复项目',
+  'project.sync-key.copy': '复制同步密钥',
+  'project.sync-key.rotate': '轮换同步密钥',
 };
 
 const UTF8_ENCODER = new TextEncoder();
@@ -131,6 +133,33 @@ export default function ProjectAdminManager({
       setMessage(enabled
         ? `已恢复项目 ${result.project.name}。`
         : `已停用项目 ${result.project.name}。`);
+    });
+  }
+
+  async function copyProjectSyncKey(project: AdminProject) {
+    await run(async () => {
+      const result = await request<{ syncKey: string }>(
+        `/api/admin/projects/${project.id}/sync-key/copy`,
+        { method: 'POST' },
+      );
+      await navigator.clipboard.writeText(result.syncKey);
+      setMessage(`已复制 ${project.name} 的同步密钥。`);
+    });
+  }
+
+  async function rotateProjectSyncKey(project: AdminProject) {
+    if (!window.confirm(`确认轮换项目“${project.name}”的同步密钥？旧密钥将立即失效。`)) {
+      return;
+    }
+    await run(async () => {
+      const result = await request<{ project: AdminProject }>(
+        `/api/admin/projects/${project.id}/sync-key/rotate`,
+        { method: 'POST' },
+      );
+      setProjects((current) => current.map((item) =>
+        item.id === result.project.id ? result.project : item,
+      ));
+      setMessage(`已轮换 ${result.project.name} 的同步密钥，请复制新密钥更新自动化配置。`);
     });
   }
 
@@ -266,6 +295,19 @@ export default function ProjectAdminManager({
                   />
                 </label>
               </div>
+              <section aria-label={`${project.name} 同步密钥`} className="mt-5 rounded-2xl border border-[#dbe5dc] bg-[#f7faf6] p-4">
+                <p className="text-xs font-bold text-[#607269]">项目同步密钥</p>
+                <code className="mt-2 block font-mono text-sm font-bold tracking-wide text-[#29483a]">{project.syncKeyMasked}</code>
+                <p className="mt-2 text-xs leading-5 text-[#718077]">页面始终只显示脱敏片段；完整值仅在复制动作中短暂返回。</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" disabled={busy} onClick={() => copyProjectSyncKey(project)} className="rounded-lg border border-[#b9cbbb] px-3 py-2 text-xs font-bold text-[#1d5b46] disabled:opacity-50">
+                    复制 {project.name} 同步密钥
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => rotateProjectSyncKey(project)} className="rounded-lg border border-[#d7b9ae] px-3 py-2 text-xs font-bold text-[#8a4331] disabled:opacity-50">
+                    轮换 {project.name} 同步密钥
+                  </button>
+                </div>
+              </section>
               <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button type="button" disabled={busy} onClick={() => saveProject(project)} className="rounded-xl bg-[#1e6349] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
                   保存 {project.name} 项目资料
