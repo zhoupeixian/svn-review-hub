@@ -9,6 +9,8 @@ import {
 } from '../app/api/admin/projects/[id]/deletion/route';
 import { PATCH as updateProject } from '../app/api/admin/projects/[id]/route';
 import { PATCH as updateProjectStatus } from '../app/api/admin/projects/[id]/status/route';
+import { POST as copyProjectSyncKey } from '../app/api/admin/projects/[id]/sync-key/copy/route';
+import { POST as rotateProjectSyncKey } from '../app/api/admin/projects/[id]/sync-key/rotate/route';
 import { POST as createProject } from '../app/api/admin/projects/route';
 import { ensureReviewSchema, ingestReviewForProject } from '../lib/reviews';
 
@@ -173,6 +175,81 @@ describe.sequential('永久删除停用项目', () => {
     expect(await recreated.json()).toMatchObject({ project: { name: '海华项目', slug: 'haihua' } });
   });
 
+  it('删除期间已开始的导入在上传结束后仍会清理新建的 R2 对象', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua');
+    let releaseUpload!: () => void;
+    let markUploadStarted!: () => void;
+    let uploadedObjectKey = '';
+    const uploadStarted = new Promise<void>((resolve) => {
+      markUploadStarted = resolve;
+    });
+    const uploadRelease = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const putSpy = vi.spyOn(FILES, 'put').mockImplementationOnce(async (key, value, options) => {
+      uploadedObjectKey = String(key);
+      markUploadStarted();
+      await uploadRelease;
+      putSpy.mockRestore();
+      return FILES.put(key, value, options);
+    });
+    const ingestion = ingestReviewForProject(
+      { id: projectId, slug: 'haihua' },
+      ingestInput('haihua/in-flight.md', '删除中的导入'),
+    );
+    const rejectedIngestion = expect(ingestion).rejects.toThrow('日志未写入');
+
+    await uploadStarted;
+    const disabled = await updateProjectStatus(
+      jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: false }),
+      context(projectId),
+    );
+    const deleted = await deleteProject(
+      jsonRequest(`/api/admin/projects/${projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
+      context(projectId),
+    );
+    releaseUpload();
+
+    expect(disabled.status).toBe(200);
+    expect(deleted.status).toBe(200);
+    await rejectedIngestion;
+    expect(uploadedObjectKey).toMatch(/^review-logs\/haihua\//);
+    expect(await FILES.head(uploadedObjectKey)).toBeNull();
+    expect(await count('review_object_cleanup_queue', 'object_key = ?', uploadedObjectKey)).toBe(0);
+  });
+
+  it('删除锁与资料编辑并发时不会改名或记录成功审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua');
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = ?').bind(projectId).run();
+    const originalBatch = DB.batch.bind(DB);
+    const batchSpy = vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare(
+        `INSERT INTO project_deletion_operations
+           (project_id, project_slug_snapshot, project_name_snapshot,
+            project_snapshot_json, started_at)
+         VALUES (?, 'haihua', '海华项目', '{}', '2026-09-05T00:00:00.000Z')`,
+      ).bind(projectId).run();
+      batchSpy.mockRestore();
+      return originalBatch(statements);
+    });
+
+    const response = await updateProject(
+      jsonRequest(`/api/admin/projects/${projectId}`, 'PATCH', {
+        name: '删除中改名', description: '',
+      }),
+      context(projectId),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(await projectRow(projectId)).toMatchObject({ name: '海华项目' });
+    expect(await count(
+      'project_admin_audits',
+      "project_id_snapshot = ? AND action = 'project.update' AND result = 'success'",
+      projectId,
+    )).toBe(0);
+  });
+
   it('R2 清理失败时保留停用项目和删除锁，拒绝恢复并允许原确认安全重试', async () => {
     const seeded = await seedDeletionProject();
     vi.spyOn(FILES, 'delete').mockRejectedValueOnce(new Error('temporary R2 failure'));
@@ -191,6 +268,14 @@ describe.sequential('永久删除停用项目', () => {
       }),
       context(seeded.projectId),
     );
+    const copiedKey = await copyProjectSyncKey(
+      new Request(`https://example.test/api/admin/projects/${seeded.projectId}/sync-key/copy`, { method: 'POST' }),
+      context(seeded.projectId),
+    );
+    const rotatedKey = await rotateProjectSyncKey(
+      new Request(`https://example.test/api/admin/projects/${seeded.projectId}/sync-key/rotate`, { method: 'POST' }),
+      context(seeded.projectId),
+    );
     const retried = await deleteProject(
       jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
       context(seeded.projectId),
@@ -202,6 +287,10 @@ describe.sequential('永久删除停用项目', () => {
     expect(await restore.json()).toMatchObject({ code: 'project_deletion_in_progress' });
     expect(renamed.status).toBe(409);
     expect(await renamed.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(copiedKey.status).toBe(409);
+    expect(await copiedKey.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(rotatedKey.status).toBe(409);
+    expect(await rotatedKey.json()).toMatchObject({ code: 'project_deletion_in_progress' });
     expect(retried.status).toBe(200);
     expect(await projectRow(seeded.projectId)).toBeNull();
     expect((await FILES.list({ prefix: 'review-logs/haihua/' })).objects).toEqual([]);

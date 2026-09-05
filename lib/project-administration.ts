@@ -308,14 +308,20 @@ export async function updateAdminProject(
   }
 
   const now = new Date().toISOString();
+  let results: D1Result[];
   try {
-    await db().batch([
+    results = await db().batch([
       db().prepare(
         `UPDATE review_projects
          SET name = ?, description = ?, updated_at = ?
-         WHERE id = ?`,
-      ).bind(candidate.name, candidate.description, now, existing.id),
-      auditProjectSelectStatement(user, 'project.update', 'success', null, now, existing.slug),
+         WHERE id = ? AND updated_at = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM project_deletion_operations deletion
+             WHERE deletion.project_id = review_projects.id
+           )
+         RETURNING id`,
+      ).bind(candidate.name, candidate.description, now, existing.id, existing.updatedAt),
+      auditProjectUpdateSelectStatement(user, now, existing.id),
     ]);
   } catch (error) {
     const businessError = uniqueConstraintError(error, {
@@ -332,6 +338,24 @@ export async function updateAdminProject(
       failureCode: businessError.code,
     });
     throw businessError;
+  }
+  if (results[0]?.results?.length !== 1 || results[1]?.results?.length !== 1) {
+    const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [existing.id]);
+    const error = latest?.deletionInProgress
+      ? projectDeletionInProgressError()
+      : new ProjectAdminError(
+          '项目资料已变化，请刷新后重试。',
+          'project_update_changed',
+          409,
+        );
+    await writeAudit(user, {
+      project: latest ?? existing,
+      snapshot: projectSnapshot(latest ?? existing),
+      action: 'project.update',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
   }
 
   const updated = await firstProject(`${projectSelect()} WHERE id = ?`, [existing.id]);
@@ -566,7 +590,8 @@ export async function deleteAdminProject(
        )`,
     ).bind(projectId),
     db().prepare(
-      'DELETE FROM review_object_cleanup_queue WHERE object_key GLOB ?',
+      `DELETE FROM review_object_cleanup_queue
+       WHERE object_key GLOB ? AND ready = 1`,
     ).bind(`review-logs/${operation.projectSlug}/*`),
     db().prepare(
       `DELETE FROM review_projects
@@ -658,13 +683,16 @@ export async function copyAdminProjectSyncKey(
     false,
   ).run();
   if (Number(result.meta.changes ?? 0) !== 1) {
-    const error = new ProjectAdminError(
-      '项目同步密钥已变化，请重试复制。',
-      'project_sync_key_changed',
-      409,
-    );
+    const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+    const error = latest?.deletionInProgress
+      ? projectDeletionInProgressError()
+      : new ProjectAdminError(
+          '项目同步密钥已变化，请重试复制。',
+          'project_sync_key_changed',
+          409,
+        );
     await writeAudit(user, {
-      project: await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]) ?? { id: projectId },
+      project: latest ?? { id: projectId },
       snapshot: { id: projectId },
       action: 'project.sync-key.copy',
       result: 'failure',
@@ -700,7 +728,11 @@ export async function rotateAdminProjectSyncKey(
   const results = await db().batch([
     db().prepare(
       `UPDATE review_projects SET sync_key_encrypted = ?, updated_at = ?
-       WHERE id = ? AND sync_key_encrypted = ?`,
+       WHERE id = ? AND sync_key_encrypted = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM project_deletion_operations deletion
+           WHERE deletion.project_id = review_projects.id
+         )`,
     ).bind(syncKeyEncrypted, createdAt, projectId, stored.syncKeyEncrypted),
     auditProjectSyncKeyStatement(
       user,
@@ -716,11 +748,13 @@ export async function rotateAdminProjectSyncKey(
     Number(results[1]?.meta.changes ?? 0) !== 1
   ) {
     const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
-    const error = new ProjectAdminError(
-      '项目同步密钥已变化，请刷新后重试。',
-      'project_sync_key_changed',
-      409,
-    );
+    const error = latest?.deletionInProgress
+      ? projectDeletionInProgressError()
+      : new ProjectAdminError(
+          '项目同步密钥已变化，请刷新后重试。',
+          'project_sync_key_changed',
+          409,
+        );
     await writeAudit(user, {
       project: latest ?? { id: projectId },
       snapshot: latest ?? { id: projectId },
@@ -1164,7 +1198,11 @@ async function provisionProjectSyncKeys(
          ),
          updated_at = ?
      WHERE sync_key_encrypted IS NULL
-       AND id IN (SELECT id FROM generated)`,
+       AND id IN (SELECT id FROM generated)
+       AND NOT EXISTS (
+         SELECT 1 FROM project_deletion_operations deletion
+         WHERE deletion.project_id = review_projects.id
+       )`,
   ).bind(JSON.stringify(generated), new Date().toISOString()).run();
 }
 
@@ -1187,6 +1225,7 @@ async function requireStoredProject(
     });
     throw error;
   }
+  await rejectDeletingSyncKeyOperation(user, project, action);
   if (!project.syncKeyEncrypted) {
     try {
       await provisionProjectSyncKeys([project]);
@@ -1205,6 +1244,7 @@ async function requireStoredProject(
     project = await db().prepare(
       `${projectSelect()} WHERE id = ?`,
     ).bind(projectId).first<StoredProject>();
+    if (project) await rejectDeletingSyncKeyOperation(user, project, action);
   }
   if (!project?.syncKeyEncrypted) {
     throw new Error('项目同步密钥未能生成。');
@@ -1218,6 +1258,32 @@ function projectSyncKeyUnavailableError(): ProjectAdminError {
     'project_sync_key_unavailable',
     409,
   );
+}
+
+function projectDeletionInProgressError(): ProjectAdminError {
+  return new ProjectAdminError(
+    '项目正在永久删除，不能执行此操作。请重试删除或联系站点维护人员。',
+    'project_deletion_in_progress',
+    409,
+  );
+}
+
+async function rejectDeletingSyncKeyOperation(
+  user: ChatGPTUser,
+  project: StoredProject,
+  action: 'project.sync-key.copy' | 'project.sync-key.rotate',
+): Promise<void> {
+  if (project.deletionInProgress !== 1) return;
+  const safeProject = await adminProject(project);
+  const error = projectDeletionInProgressError();
+  await writeAudit(user, {
+    project: safeProject,
+    snapshot: projectSnapshot(safeProject),
+    action,
+    result: 'failure',
+    failureCode: error.code,
+  });
+  throw error;
 }
 
 function auditProjectSelectStatement(
@@ -1251,6 +1317,38 @@ function auditProjectSelectStatement(
   );
 }
 
+function auditProjectUpdateSelectStatement(
+  user: ChatGPTUser,
+  createdAt: string,
+  projectId: number,
+): D1PreparedStatement {
+  return db().prepare(
+    `INSERT INTO project_admin_audits
+       (project_id_snapshot, project_slug_snapshot, project_name_snapshot,
+        project_snapshot_json, admin_user_id, admin_email_snapshot,
+        admin_display_name_snapshot, action, result, failure_code, created_at)
+     SELECT id, slug, name,
+            json_object('id', id, 'name', name, 'slug', slug,
+                        'description', description, 'displayOrder', display_order,
+                        'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
+            ?, ?, ?, 'project.update', 'success', NULL, ?
+     FROM review_projects
+     WHERE id = ? AND updated_at = ? AND changes() = 1
+       AND NOT EXISTS (
+         SELECT 1 FROM project_deletion_operations deletion
+         WHERE deletion.project_id = review_projects.id
+       )
+     RETURNING id`,
+  ).bind(
+    user.userId,
+    user.email,
+    user.displayName,
+    createdAt,
+    projectId,
+    createdAt,
+  );
+}
+
 function auditProjectSyncKeyStatement(
   user: ChatGPTUser,
   action: 'project.sync-key.copy' | 'project.sync-key.rotate',
@@ -1270,7 +1368,11 @@ function auditProjectSyncKeyStatement(
                         'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
             ?, ?, ?, ?, 'success', NULL, ?
      FROM review_projects
-     WHERE id = ? AND sync_key_encrypted = ?${requirePreviousChange ? ' AND changes() = 1' : ''}`,
+     WHERE id = ? AND sync_key_encrypted = ?${requirePreviousChange ? ' AND changes() = 1' : ''}
+       AND NOT EXISTS (
+         SELECT 1 FROM project_deletion_operations deletion
+         WHERE deletion.project_id = review_projects.id
+       )`,
   ).bind(
     user.userId,
     user.email,
