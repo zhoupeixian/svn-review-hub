@@ -566,6 +566,9 @@ export async function deleteAdminProject(
        )`,
     ).bind(projectId),
     db().prepare(
+      'DELETE FROM review_object_cleanup_queue WHERE object_key GLOB ?',
+    ).bind(`review-logs/${operation.projectSlug}/*`),
+    db().prepare(
       `DELETE FROM review_projects
        WHERE id = ? AND enabled = 0
          AND EXISTS (
@@ -592,9 +595,9 @@ export async function deleteAdminProject(
     ).bind(projectId),
   ]);
   if (
-    results[1]?.results?.length !== 1 ||
     results[2]?.results?.length !== 1 ||
-    results[3]?.results?.length !== 1
+    results[3]?.results?.length !== 1 ||
+    results[4]?.results?.length !== 1
   ) {
     const error = new ProjectAdminError(
       '项目删除状态已变化，请刷新后确认结果。',

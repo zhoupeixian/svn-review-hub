@@ -41,6 +41,7 @@ describe.sequential('永久删除停用项目', () => {
   beforeEach(async () => {
     await DB.batch([
       DB.prepare('DELETE FROM project_deletion_operations'),
+      DB.prepare('DELETE FROM review_object_cleanup_queue'),
       DB.prepare('DELETE FROM project_admin_audits'),
       DB.prepare('DELETE FROM archive_operation_previews'),
       DB.prepare('DELETE FROM review_issue_events'),
@@ -122,6 +123,16 @@ describe.sequential('永久删除停用项目', () => {
       '2026-09-04T00:00:00.000Z',
       '2026-09-04T00:10:00.000Z',
     ).run();
+    await DB.batch([
+      DB.prepare(
+        `INSERT INTO review_object_cleanup_queue (object_key, created_at, ready)
+         VALUES ('review-logs/haihua/orphan.md', '2026-09-04T00:00:00.000Z', 1)`,
+      ),
+      DB.prepare(
+        `INSERT INTO review_object_cleanup_queue (object_key, created_at, ready)
+         VALUES ('review-logs/finance/orphan.md', '2026-09-04T00:00:00.000Z', 1)`,
+      ),
+    ]);
 
     const response = await deleteProject(
       jsonRequest(`/api/admin/projects/${seeded.projectId}/deletion`, 'DELETE', { projectName: '海华项目' }),
@@ -138,6 +149,8 @@ describe.sequential('永久删除停用项目', () => {
     expect(await count('review_issue_events')).toBe(1);
     expect(await count('review_search', `rowid IN (${seeded.reviewIds.map(() => '?').join(',')})`, ...seeded.reviewIds)).toBe(0);
     expect(await count('archive_operation_previews', "token = 'delete-preview'")).toBe(0);
+    expect(await count('review_object_cleanup_queue', "object_key GLOB 'review-logs/haihua/*'")).toBe(0);
+    expect(await count('review_object_cleanup_queue', "object_key GLOB 'review-logs/finance/*'")).toBe(1);
     expect((await FILES.list({ prefix: 'review-logs/haihua/' })).objects).toEqual([]);
     expect(await (await FILES.get('sentinel/keep.txt'))?.text()).toBe('保留');
     expect(await count('review_logs', 'project_id = ?', seeded.otherProjectId)).toBe(1);
