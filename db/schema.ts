@@ -34,6 +34,16 @@ export const reviewProjects = sqliteTable(
   ],
 );
 
+export const projectDeletionOperations = sqliteTable('project_deletion_operations', {
+  projectId: integer('project_id').primaryKey(),
+  projectSlugSnapshot: text('project_slug_snapshot').notNull(),
+  projectNameSnapshot: text('project_name_snapshot').notNull(),
+  projectSnapshotJson: text('project_snapshot_json').notNull(),
+  startedAt: text('started_at').notNull(),
+  claimToken: text('claim_token'),
+  claimExpiresAt: text('claim_expires_at'),
+});
+
 export const reviewLogs = sqliteTable(
   'review_logs',
   {

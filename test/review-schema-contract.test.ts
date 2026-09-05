@@ -251,6 +251,50 @@ async function resetToPreProjectSchema(): Promise<void> {
 }
 
 describe.sequential('审查生命周期 D1 schema', () => {
+  it('租约迁移可升级已执行 0008 的删除操作表并保留待重试记录', async () => {
+    await DB.prepare('DROP TABLE IF EXISTS project_deletion_operations').run();
+    const createDeletionTable = TEST_MIGRATIONS.find((item) =>
+      item.name.startsWith('0008_'),
+    );
+    const addDeletionLease = TEST_MIGRATIONS.find((item) =>
+      item.name.startsWith('0009_'),
+    );
+    expect(createDeletionTable).toBeDefined();
+    expect(addDeletionLease).toBeDefined();
+
+    await DB.batch(createDeletionTable!.queries.map((query) => DB.prepare(query)));
+    await DB.prepare(
+      `INSERT INTO project_deletion_operations
+         (project_id, project_slug_snapshot, project_name_snapshot,
+          project_snapshot_json, started_at)
+       VALUES (99, 'legacy-project', '旧项目', '{}', '2026-09-05T00:00:00.000Z')`,
+    ).run();
+    expect(await tableColumns('project_deletion_operations')).not.toContain('claim_token');
+
+    await DB.batch(addDeletionLease!.queries.map((query) => DB.prepare(query)));
+
+    expect(await tableColumns('project_deletion_operations')).toEqual([
+      'project_id',
+      'project_slug_snapshot',
+      'project_name_snapshot',
+      'project_snapshot_json',
+      'started_at',
+      'claim_token',
+      'claim_expires_at',
+    ]);
+    expect(
+      await DB.prepare(
+        `SELECT project_slug_snapshot AS projectSlug, claim_token AS claimToken,
+                claim_expires_at AS claimExpiresAt
+         FROM project_deletion_operations WHERE project_id = 99`,
+      ).first(),
+    ).toEqual({
+      projectSlug: 'legacy-project',
+      claimToken: null,
+      claimExpiresAt: null,
+    });
+  });
+
   it('部署迁移创建无级联外键的项目管理审计表和筛选索引', async () => {
     await DB.prepare('DROP TABLE IF EXISTS project_admin_audits').run();
     const migration = TEST_MIGRATIONS.find((item) =>

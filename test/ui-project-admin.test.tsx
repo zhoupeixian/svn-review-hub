@@ -13,6 +13,7 @@ const projects = [
     description: 'ERP 主项目',
     displayOrder: 0,
     enabled: true,
+    deletionInProgress: false,
     syncKeyMasked: 'abc***wxyz',
     createdAt: '2026-09-01T00:00:00.000Z',
     updatedAt: '2026-09-01T00:00:00.000Z',
@@ -24,6 +25,7 @@ const projects = [
     description: '海华专项',
     displayOrder: 10,
     enabled: true,
+    deletionInProgress: false,
     syncKeyMasked: 'def***stuv',
     createdAt: '2026-09-01T00:00:00.000Z',
     updatedAt: '2026-09-01T00:00:00.000Z',
@@ -133,6 +135,19 @@ describe('全局项目维护 UI', () => {
     expect(screen.getByText('2026-09-01 18:00:00')).toBeTruthy();
   });
 
+  it('存在永久删除中的项目时禁用全部排序按钮', () => {
+    render(<ProjectAdminManager
+      initialProjects={[
+        projects[0],
+        { ...projects[1], enabled: false, deletionInProgress: true },
+      ]}
+      initialAudits={[]}
+    />);
+
+    expect((screen.getByRole('button', { name: '下移 ZHERP' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '上移 海华项目' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('停用和恢复项目并始终保留管理员历史入口', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const fetchMock = vi.spyOn(global, 'fetch')
@@ -153,6 +168,50 @@ describe('全局项目维护 UI', () => {
     await userEvent.click(screen.getByRole('button', { name: '恢复 海华项目' }));
     expect(await screen.findByRole('button', { name: '停用 海华项目' })).toBeTruthy();
     expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ enabled: true });
+  });
+
+  it('停用项目先展示五类影响，只有完整名称匹配后才能永久删除', async () => {
+    const disabled = { ...projects[1], enabled: false };
+    const counts = {
+      reviewCount: 4,
+      issueCount: 12,
+      issueEventCount: 7,
+      archivedReviewCount: 2,
+      rawObjectCount: 5,
+    };
+    const fetchMock = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ project: disabled, counts }))
+      .mockResolvedValueOnce(jsonResponse({
+        deletedProject: { name: '海华项目', slug: 'haihua' }, counts,
+      }));
+    render(<ProjectAdminManager initialProjects={[projects[0], disabled]} initialAudits={[]} />);
+
+    expect(screen.queryByRole('button', { name: '预览永久删除 ZHERP' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '预览永久删除 海华项目' }));
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/projects/2/deletion');
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual({ method: 'GET' });
+    const dialog = await screen.findByRole('dialog', { name: '永久删除 海华项目' });
+    expect(within(dialog).getByText('日志 4')).toBeTruthy();
+    expect(within(dialog).getByText('问题 12')).toBeTruthy();
+    expect(within(dialog).getByText('问题事件 7')).toBeTruthy();
+    expect(within(dialog).getByText('归档记录 2')).toBeTruthy();
+    expect(within(dialog).getByText('原始日志对象 5')).toBeTruthy();
+
+    const confirmation = within(dialog).getByLabelText('输入完整项目名称 海华项目');
+    const confirmButton = within(dialog).getByRole('button', { name: '永久删除 海华项目' });
+    await userEvent.type(confirmation, '海华');
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(confirmation, '项目');
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(confirmButton);
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/admin/projects/2/deletion');
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE' });
+    expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body)))
+      .toEqual({ projectName: '海华项目' });
+    expect(await screen.findByText('已永久删除项目 海华项目。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '预览永久删除 海华项目' })).toBeNull();
   });
 
   it('只展示脱敏密钥，复制时不把完整值放进页面状态，且可轮换', async () => {

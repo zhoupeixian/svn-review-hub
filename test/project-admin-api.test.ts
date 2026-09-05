@@ -51,6 +51,7 @@ describe.sequential('全局审查项目维护与审计 API', () => {
       fullName: '旧管理员名',
     };
     await DB.batch([
+      DB.prepare('DELETE FROM project_deletion_operations'),
       DB.prepare('DELETE FROM project_admin_audits'),
       DB.prepare('DELETE FROM review_issue_events'),
       DB.prepare('DELETE FROM review_issues'),
@@ -558,6 +559,35 @@ describe.sequential('全局审查项目维护与审计 API', () => {
       result: 'failure', failureCode: 'project_set_changed',
     });
     expect(JSON.parse(reorderAudits[0].projectSnapshot).projects).toHaveLength(3);
+  });
+
+  it('排序写入前建立删除锁时原子拒绝，不改变顺序或记录成功审计', async () => {
+    const haihua = await createProjectAndId('海华项目', 'haihua', 10);
+    const batch = DB.batch.bind(DB);
+    const batchSpy = vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare(
+        `INSERT INTO project_deletion_operations
+           (project_id, project_slug_snapshot, project_name_snapshot,
+            project_snapshot_json, started_at)
+         SELECT id, slug, name, '{}', '2026-09-05T00:00:00.000Z'
+         FROM review_projects WHERE id = ?`,
+      ).bind(haihua).run();
+      batchSpy.mockRestore();
+      return batch(statements);
+    });
+
+    const response = await reorderProjects(jsonRequest('/api/admin/projects/order', 'PUT', {
+      projectIds: [haihua, 1],
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'project_deletion_in_progress' });
+    expect(await projectOrder()).toEqual([
+      { id: 1, displayOrder: 0 },
+      { id: haihua, displayOrder: 10 },
+    ]);
+    expect((await audits()).filter((audit) =>
+      audit.action === 'project.reorder' && audit.result === 'success')).toEqual([]);
   });
 
   it.each([

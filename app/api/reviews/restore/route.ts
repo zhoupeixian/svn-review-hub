@@ -40,10 +40,32 @@ export async function restoreReviewsForProject(
       return Response.json({ error: '仅可恢复已归档且存在的日志。' }, { status: 404 });
     }
     const result = await database
-      .prepare(`UPDATE review_logs SET archived_at = NULL WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL`)
-      .bind(projectId, ...uniqueIds)
+      .prepare(
+        `UPDATE review_logs SET archived_at = NULL
+         WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM review_projects project
+             WHERE project.id = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM project_deletion_operations deletion
+                 WHERE deletion.project_id = project.id
+               )
+           )`,
+      )
+      .bind(projectId, ...uniqueIds, projectId)
       .run();
     if (Number(result.meta.changes ?? 0) !== uniqueIds.length) {
+      const projectWritable = await database.prepare(
+        `SELECT 1 FROM review_projects project
+         WHERE project.id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM project_deletion_operations deletion
+             WHERE deletion.project_id = project.id
+           )`,
+      ).bind(projectId).first();
+      if (!projectWritable) {
+        return Response.json({ error: '项目状态已变化，请刷新后重试。' }, { status: 409 });
+      }
       const check = await database
         .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL`)
         .bind(projectId, ...uniqueIds)
