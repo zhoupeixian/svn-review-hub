@@ -8,7 +8,7 @@ import {
   maskProjectSyncKey,
 } from '@/lib/reviews';
 
-type RuntimeEnv = { DB: D1Database };
+type RuntimeEnv = { DB: D1Database; REVIEW_SYNC_KEY?: string };
 type SqlValue = string | number | null;
 
 export const PROJECT_ADMIN_ACTIONS = [
@@ -101,7 +101,7 @@ function db(): D1Database {
 
 async function adminProject(row: StoredProject): Promise<AdminProject> {
   const { syncKeyEncrypted, enabled, ...project } = row;
-  let syncKeyMasked = '';
+  let syncKeyMasked = '不可用';
   if (syncKeyEncrypted) {
     try {
       syncKeyMasked = maskProjectSyncKey(
@@ -126,12 +126,7 @@ function projectSelect(): string {
 }
 
 async function firstProject(statement: string, values: SqlValue[] = []): Promise<AdminProject | null> {
-  let row = await db().prepare(statement).bind(...values).first<StoredProject>();
-  if (!row) return null;
-  if (!row.syncKeyEncrypted) {
-    await provisionProjectSyncKeys([row]);
-    row = await db().prepare(statement).bind(...values).first<StoredProject>();
-  }
+  const row = await db().prepare(statement).bind(...values).first<StoredProject>();
   return row ? adminProject(row) : null;
 }
 
@@ -143,10 +138,14 @@ export async function listAdminProjects(): Promise<AdminProject[]> {
   let rows = result.results ?? [];
   const missing = rows.filter((row) => !row.syncKeyEncrypted);
   if (missing.length) {
-    await provisionProjectSyncKeys(missing);
-    rows = (await db().prepare(
-      `${projectSelect()} ORDER BY display_order, name COLLATE NOCASE, id`,
-    ).all<StoredProject>()).results ?? [];
+    try {
+      await provisionProjectSyncKeys(missing);
+      rows = (await db().prepare(
+        `${projectSelect()} ORDER BY display_order, name COLLATE NOCASE, id`,
+      ).all<StoredProject>()).results ?? [];
+    } catch {
+      // 项目资料维护不依赖同步密钥；配置恢复后再次加载会继续补齐。
+    }
   }
   return Promise.all(rows.map(adminProject));
 }
@@ -172,11 +171,23 @@ export async function createAdminProject(
     throw businessError;
   }
 
-  const syncKey = generateProjectSyncKey();
-  const syncKeyEncrypted = await encryptProjectSyncKey(
-    { id: 0, slug: candidate.slug },
-    syncKey,
-  );
+  let syncKeyEncrypted: string;
+  try {
+    syncKeyEncrypted = await encryptProjectSyncKey(
+      { id: 0, slug: candidate.slug },
+      generateProjectSyncKey(),
+    );
+  } catch {
+    const error = projectSyncKeyUnavailableError();
+    await writeAudit(user, {
+      project: candidate,
+      snapshot: candidate,
+      action: 'project.create',
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
   const now = new Date().toISOString();
   try {
     await db().batch([
@@ -759,9 +770,13 @@ async function provisionProjectSyncKeys(
   projects: Array<Pick<StoredProject, 'id' | 'slug'>>,
 ): Promise<void> {
   if (!projects.length) return;
+  const legacyKey = (env as unknown as RuntimeEnv).REVIEW_SYNC_KEY?.trim();
   const generated = await Promise.all(projects.map(async (project) => ({
     id: project.id,
-    ciphertext: await encryptProjectSyncKey(project, generateProjectSyncKey()),
+    ciphertext: await encryptProjectSyncKey(
+      project,
+      project.slug === 'zherp' && legacyKey ? legacyKey : generateProjectSyncKey(),
+    ),
   })));
   await db().prepare(
     `WITH generated AS (
