@@ -45,7 +45,7 @@ export async function restoreReviewsForProject(
          WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL
            AND EXISTS (
              SELECT 1 FROM review_projects project
-             WHERE project.id = ? AND project.enabled = 1
+             WHERE project.id = ?
                AND NOT EXISTS (
                  SELECT 1 FROM project_deletion_operations deletion
                  WHERE deletion.project_id = project.id
@@ -57,7 +57,7 @@ export async function restoreReviewsForProject(
     if (Number(result.meta.changes ?? 0) !== uniqueIds.length) {
       const projectWritable = await database.prepare(
         `SELECT 1 FROM review_projects project
-         WHERE project.id = ? AND project.enabled = 1
+         WHERE project.id = ?
            AND NOT EXISTS (
              SELECT 1 FROM project_deletion_operations deletion
              WHERE deletion.project_id = project.id

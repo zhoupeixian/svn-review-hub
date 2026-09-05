@@ -124,7 +124,7 @@ export async function archiveReviewsForProject(
            (token, admin_user_id, review_ids_json, review_count, revision_count, issue_count, created_at, expires_at)
            SELECT ?, ?, ?, ?, ?, ?, ?, ?
            FROM review_projects project
-           WHERE project.id = ? AND project.enabled = 1
+           WHERE project.id = ?
              AND NOT EXISTS (
                SELECT 1 FROM project_deletion_operations deletion
                WHERE deletion.project_id = project.id
@@ -196,7 +196,7 @@ export async function archiveReviewsForProject(
            AND (SELECT COUNT(*) FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL) = ?
            AND EXISTS (
              SELECT 1 FROM review_projects project
-             WHERE project.id = ? AND project.enabled = 1
+             WHERE project.id = ?
                AND NOT EXISTS (
                  SELECT 1 FROM project_deletion_operations deletion
                  WHERE deletion.project_id = project.id
@@ -213,7 +213,7 @@ export async function archiveReviewsForProject(
            WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL
              AND EXISTS (
                SELECT 1 FROM review_projects project
-               WHERE project.id = ? AND project.enabled = 1
+               WHERE project.id = ?
                  AND NOT EXISTS (
                    SELECT 1 FROM project_deletion_operations deletion
                    WHERE deletion.project_id = project.id
