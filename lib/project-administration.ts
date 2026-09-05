@@ -583,11 +583,7 @@ export async function deleteAdminProject(
   const results = await db().batch([
     db().prepare(
       `DELETE FROM archive_operation_previews
-       WHERE EXISTS (
-         SELECT 1 FROM json_each(archive_operation_previews.review_ids_json) selected
-         JOIN review_logs review ON review.id = CAST(selected.value AS INTEGER)
-         WHERE review.project_id = ?
-       )`,
+       WHERE CAST(json_extract(review_ids_json, '$.projectId') AS INTEGER) = ?`,
     ).bind(projectId),
     db().prepare(
       `DELETE FROM review_object_cleanup_queue

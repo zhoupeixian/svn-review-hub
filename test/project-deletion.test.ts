@@ -113,7 +113,7 @@ describe.sequential('永久删除停用项目', () => {
   });
 
   it('确认后只清理目标项目全部 D1、R2、搜索和密钥数据并保留快照审计', async () => {
-    const seeded = await seedDeletionProject();
+    const seeded = await seedDeletionProject({ projectIdOutsideReviewSequence: true });
     const encrypted = (await projectRow(seeded.projectId))?.syncKeyEncrypted;
     await DB.prepare(
       `INSERT INTO archive_operation_previews
@@ -121,7 +121,7 @@ describe.sequential('永久删除停用项目', () => {
           issue_count, created_at, expires_at)
        VALUES ('delete-preview', 'admin-1', ?, 1, 1, 1, ?, ?)`,
     ).bind(
-      JSON.stringify([seeded.reviewIds[0]]),
+      JSON.stringify({ projectId: seeded.projectId, ids: [seeded.reviewIds[0]] }),
       '2026-09-04T00:00:00.000Z',
       '2026-09-04T00:10:00.000Z',
     ).run();
@@ -301,13 +301,21 @@ describe.sequential('永久删除停用项目', () => {
   });
 });
 
-async function seedDeletionProject(): Promise<{
+async function seedDeletionProject(
+  options: { projectIdOutsideReviewSequence?: boolean } = {},
+): Promise<{
   projectId: number;
   otherProjectId: number;
   reviewIds: number[];
 }> {
-  const projectId = await createProjectAndId('海华项目', 'haihua');
+  let projectId = await createProjectAndId('海华项目', 'haihua');
   const otherProjectId = await createProjectAndId('财务项目', 'finance');
+  if (options.projectIdOutsideReviewSequence) {
+    const movedProjectId = projectId + 1_000_000;
+    await DB.prepare('UPDATE review_projects SET id = ? WHERE id = ?')
+      .bind(movedProjectId, projectId).run();
+    projectId = movedProjectId;
+  }
   const first = await ingestReviewForProject(
     { id: projectId, slug: 'haihua' },
     ingestInput('haihua/active.md', '活动日志'),
