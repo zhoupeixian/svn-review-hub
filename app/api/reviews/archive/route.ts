@@ -118,11 +118,17 @@ export async function archiveReviewsForProject(
       }
       const token = crypto.randomUUID();
       const now = new Date();
-      await database
+      const result = await database
         .prepare(
           `INSERT INTO archive_operation_previews
            (token, admin_user_id, review_ids_json, review_count, revision_count, issue_count, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           SELECT ?, ?, ?, ?, ?, ?, ?, ?
+           FROM review_projects project
+           WHERE project.id = ? AND project.enabled = 1
+             AND NOT EXISTS (
+               SELECT 1 FROM project_deletion_operations deletion
+               WHERE deletion.project_id = project.id
+             )`,
         )
         .bind(
           token,
@@ -133,8 +139,12 @@ export async function archiveReviewsForProject(
           counts.issueCount,
           now.toISOString(),
           new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+          projectId,
         )
         .run();
+      if (Number(result.meta.changes ?? 0) !== 1) {
+        return Response.json({ error: '项目状态已变化，请刷新后重试。' }, { status: 409 });
+      }
       return Response.json({ previewToken: token, ...counts });
     }
 
@@ -183,15 +193,34 @@ export async function archiveReviewsForProject(
       .prepare(
         `UPDATE review_logs SET archived_at = ?
          WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL
-           AND (SELECT COUNT(*) FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL) = ?`,
+           AND (SELECT COUNT(*) FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NULL) = ?
+           AND EXISTS (
+             SELECT 1 FROM review_projects project
+             WHERE project.id = ? AND project.enabled = 1
+               AND NOT EXISTS (
+                 SELECT 1 FROM project_deletion_operations deletion
+                 WHERE deletion.project_id = project.id
+               )
+           )`,
       )
-      .bind(timestamp, projectId, ...ids, projectId, ...ids, ids.length)
+      .bind(timestamp, projectId, ...ids, projectId, ...ids, ids.length, projectId)
       .run();
     const changed = Number(result.meta.changes ?? 0);
     if (changed !== ids.length) {
       const check = await database
-        .prepare(`SELECT COUNT(*) AS count FROM review_logs WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL`)
-        .bind(projectId, ...ids)
+        .prepare(
+          `SELECT COUNT(*) AS count FROM review_logs
+           WHERE project_id = ? AND id IN (${marks}) AND archived_at IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM review_projects project
+               WHERE project.id = ? AND project.enabled = 1
+                 AND NOT EXISTS (
+                   SELECT 1 FROM project_deletion_operations deletion
+                   WHERE deletion.project_id = project.id
+                 )
+             )`,
+        )
+        .bind(projectId, ...ids, projectId)
         .first<{ count: number }>();
       if ((check?.count ?? 0) === ids.length) {
         await database.prepare('DELETE FROM archive_operation_previews WHERE token = ?').bind(body.previewToken).run();

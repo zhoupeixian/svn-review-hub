@@ -811,11 +811,13 @@ export async function reorderAdminProjects(
   const auditWriteCount = results[1]?.meta.changes ?? 0;
   if (auditWriteCount !== projectIds.length) {
     const currentProjects = await listAdminProjects();
-    const error = new ProjectAdminError(
-      '项目列表已变化，请刷新后重新排序。',
-      'project_set_changed',
-      409,
-    );
+    const error = currentProjects.some((project) => project.deletionInProgress)
+      ? projectDeletionInProgressError()
+      : new ProjectAdminError(
+          '项目列表已变化，请刷新后重新排序。',
+          'project_set_changed',
+          409,
+        );
     await writeAudit(user, {
       snapshot: { requestedProjectIds: projectIds, projects: currentProjects },
       action: 'project.reorder',
@@ -1448,6 +1450,9 @@ function currentProjectSetGuard(projectIds: number[]): {
           AND NOT EXISTS (
             SELECT 1 FROM review_projects
             WHERE id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM project_deletion_operations
           )`,
     values: [projectIdsJson, projectIdsJson],
   };

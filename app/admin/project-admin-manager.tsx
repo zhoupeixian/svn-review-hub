@@ -55,6 +55,7 @@ export default function ProjectAdminManager({
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [deletionDialog, setDeletionDialog] = useState<DeletionDialog | null>(null);
+  const reorderLocked = projects.some((project) => project.deletionInProgress);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -297,10 +298,10 @@ export default function ProjectAdminManager({
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" disabled={busy || index === 0} onClick={() => moveProject(index, -1)} className="rounded-lg border border-[#cddace] px-3 py-2 text-xs font-bold disabled:opacity-40">
+                  <button type="button" disabled={busy || reorderLocked || index === 0} onClick={() => moveProject(index, -1)} className="rounded-lg border border-[#cddace] px-3 py-2 text-xs font-bold disabled:opacity-40">
                     上移 {project.name}
                   </button>
-                  <button type="button" disabled={busy || index === projects.length - 1} onClick={() => moveProject(index, 1)} className="rounded-lg border border-[#cddace] px-3 py-2 text-xs font-bold disabled:opacity-40">
+                  <button type="button" disabled={busy || reorderLocked || index === projects.length - 1} onClick={() => moveProject(index, 1)} className="rounded-lg border border-[#cddace] px-3 py-2 text-xs font-bold disabled:opacity-40">
                     下移 {project.name}
                   </button>
                 </div>

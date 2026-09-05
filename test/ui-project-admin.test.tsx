@@ -135,6 +135,19 @@ describe('全局项目维护 UI', () => {
     expect(screen.getByText('2026-09-01 18:00:00')).toBeTruthy();
   });
 
+  it('存在永久删除中的项目时禁用全部排序按钮', () => {
+    render(<ProjectAdminManager
+      initialProjects={[
+        projects[0],
+        { ...projects[1], enabled: false, deletionInProgress: true },
+      ]}
+      initialAudits={[]}
+    />);
+
+    expect((screen.getByRole('button', { name: '下移 ZHERP' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '上移 海华项目' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('停用和恢复项目并始终保留管理员历史入口', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const fetchMock = vi.spyOn(global, 'fetch')
