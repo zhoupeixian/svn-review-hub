@@ -578,6 +578,13 @@ export async function ensureReviewSchema(): Promise<void> {
         'created_at TEXT NOT NULL',
         ')',
       ].join(' '),
+      [
+        'CREATE TABLE IF NOT EXISTS review_object_cleanup_queue (',
+        'object_key TEXT PRIMARY KEY,',
+        'created_at TEXT NOT NULL,',
+        'ready INTEGER NOT NULL DEFAULT 1',
+        ')',
+      ].join(' '),
     ];
 
     await DB.batch(
@@ -594,6 +601,7 @@ export async function ensureReviewSchema(): Promise<void> {
       'DROP INDEX IF EXISTS idx_review_logs_source_key',
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_review_logs_project_source_key ON review_logs(project_id, source_key)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_project_id ON review_logs(project_id)',
+      'CREATE INDEX IF NOT EXISTS idx_review_logs_content_object_key ON review_logs(content_object_key)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_log_date ON review_logs(log_date)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_severity ON review_logs(p1_count, p2_count)',
       'CREATE INDEX IF NOT EXISTS idx_review_logs_archive_date_id ON review_logs(archived_at, log_date, id)',
@@ -874,11 +882,18 @@ export async function getReviewSummaries(
 export async function getEnabledReviewProject(
   slug: string,
 ): Promise<ReviewProject | null> {
+  const project = await getReviewProject(slug);
+  return project?.enabled ? project : null;
+}
+
+export async function getReviewProject(
+  slug: string,
+): Promise<ReviewProject | null> {
   const normalizedSlug = slug.trim().toLowerCase();
   if (!isValidReviewProjectSlug(normalizedSlug)) return null;
   const project = await first<Omit<ReviewProject, 'enabled'> & { enabled: number }>(
     `SELECT id, name, slug, description, display_order AS displayOrder, enabled
-     FROM review_projects WHERE slug = ? AND enabled = 1`,
+     FROM review_projects WHERE slug = ?`,
     [normalizedSlug],
   );
   return project ? { ...project, enabled: project.enabled === 1 } : null;
@@ -1669,26 +1684,49 @@ export async function ingestReviewForProject(
   const sourceName = input.sourceName.trim().slice(0, 255) || 'svn审查日志.md';
   const now = new Date().toISOString();
   const sourceHash = await sha256(markdown);
-  const contentObjectKey =
-    'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' + sourceHash + '.md';
   const { DB, FILES } = getRuntime();
   const projectId = storedProject.id;
-
-  await FILES.put(contentObjectKey, markdown, {
-    httpMetadata: {
-      contentType: 'text/markdown; charset=utf-8',
-    },
-    customMetadata: {
-      projectSlug: storedProject.slug,
-      logDate: parsed.logDate,
-      sourceName,
-    },
-  });
-
-  const existing = await first<{ id: number }>(
-    'SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?',
+  const existing = await first<{
+    id: number;
+    sourceHash: string;
+    contentObjectKey: string;
+  }>(
+    `SELECT id, source_hash AS sourceHash, content_object_key AS contentObjectKey
+     FROM review_logs WHERE project_id = ? AND source_key = ?`,
     [projectId, sourceKey],
   );
+  const reusableObject = existing?.sourceHash === sourceHash
+    ? await FILES.head(existing.contentObjectKey)
+    : null;
+  const contentObjectKey = reusableObject
+    ? existing!.contentObjectKey
+    : 'review-logs/' + storedProject.slug + '/' + parsed.logDate + '/' +
+      sourceHash + '-' + crypto.randomUUID() + '.md';
+  const createdContentObject = !reusableObject;
+
+  if (createdContentObject) {
+    await DB.prepare(
+      `INSERT OR IGNORE INTO review_object_cleanup_queue (object_key, created_at, ready)
+       VALUES (?, ?, 0)`,
+    ).bind(contentObjectKey, now).run();
+    try {
+      await FILES.put(contentObjectKey, markdown, {
+        httpMetadata: {
+          contentType: 'text/markdown; charset=utf-8',
+        },
+        customMetadata: {
+          projectSlug: storedProject.slug,
+          logDate: parsed.logDate,
+          sourceName,
+        },
+      });
+    } catch (error) {
+      await markReviewObjectCleanupReady(DB, contentObjectKey);
+      await drainReviewObjectCleanupQueue(DB, FILES);
+      throw error;
+    }
+  }
+
   const existingIssues = existing
     ? await all<IssueIdentityRow>(
         `SELECT id, review_id AS reviewId, issue_key AS issueKey,
@@ -1734,7 +1772,8 @@ export async function ingestReviewForProject(
         'project_id, log_date, source_key, source_name, source_hash, content_object_key,',
         'title, overview, scope_text, revision_count, reviewed_count, skipped_count,',
         'p1_count, p2_count, p3_count, sync_mode, imported_by, imported_at, updated_at',
-        ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ') SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?',
+        'FROM review_projects WHERE id = ? AND slug = ? AND enabled = 1',
         'ON CONFLICT(project_id, source_key) DO UPDATE SET',
         'log_date = excluded.log_date, source_name = excluded.source_name,',
         'source_hash = excluded.source_hash, content_object_key = excluded.content_object_key,',
@@ -1744,6 +1783,7 @@ export async function ingestReviewForProject(
         'p1_count = excluded.p1_count, p2_count = excluded.p2_count,',
         'p3_count = excluded.p3_count, sync_mode = excluded.sync_mode,',
         'imported_by = excluded.imported_by, updated_at = excluded.updated_at',
+        'WHERE review_logs.content_object_key = ?',
       ].join(' '),
     ).bind(
       projectId,
@@ -1765,19 +1805,31 @@ export async function ingestReviewForProject(
       input.importedBy.slice(0, 255),
       now,
       now,
+      projectId,
+      storedProject.slug,
+      existing?.contentObjectKey ?? null,
     ),
     DB.prepare(
-      'DELETE FROM review_revisions WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)',
-    ).bind(projectId, sourceKey),
+      `DELETE FROM review_revisions
+       WHERE review_id = (SELECT id FROM review_logs
+                          WHERE project_id = ? AND source_key = ? AND content_object_key = ?)
+         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
+    ).bind(projectId, sourceKey, contentObjectKey, projectId),
     DB.prepare(
-      'UPDATE review_issues SET source_current = 0 WHERE review_id = (SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?)',
-    ).bind(projectId, sourceKey),
+      `UPDATE review_issues SET source_current = 0
+       WHERE review_id = (SELECT id FROM review_logs
+                          WHERE project_id = ? AND source_key = ? AND content_object_key = ?)
+         AND EXISTS (SELECT 1 FROM review_projects WHERE id = ? AND enabled = 1)`,
+    ).bind(projectId, sourceKey, contentObjectKey, projectId),
     ...parsed.revisions.map((revision) =>
       DB.prepare(
         [
           'INSERT INTO review_revisions (',
           'review_id, revision, author, committed_at, description, conclusion',
-          ') SELECT id, ?, ?, ?, ?, ? FROM review_logs WHERE project_id = ? AND source_key = ?',
+          ') SELECT l.id, ?, ?, ?, ?, ? FROM review_logs l',
+          'JOIN review_projects p ON p.id = l.project_id',
+          'WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?',
+          'AND p.enabled = 1',
         ].join(' '),
       ).bind(
         revision.revision,
@@ -1787,6 +1839,7 @@ export async function ingestReviewForProject(
         revision.conclusion,
         projectId,
         sourceKey,
+        contentObjectKey,
       ),
     ),
     ...currentIssues.map(([issueKey, issue]) =>
@@ -1795,8 +1848,10 @@ export async function ingestReviewForProject(
           'INSERT INTO review_issues (',
           'review_id, issue_key, severity, title, related_revisions, detail,',
           'status, status_note, status_updated_at, source_current, version',
-          ") SELECT id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
-          'FROM review_logs WHERE project_id = ? AND source_key = ?',
+          ") SELECT l.id, ?, ?, ?, ?, ?, 'open', NULL, NULL, 1, 0",
+          'FROM review_logs l JOIN review_projects p ON p.id = l.project_id',
+          'WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?',
+          'AND p.enabled = 1',
           'ON CONFLICT(review_id, issue_key) WHERE issue_key IS NOT NULL',
           'DO UPDATE SET severity = excluded.severity, title = excluded.title,',
           'related_revisions = excluded.related_revisions, detail = excluded.detail,',
@@ -1810,27 +1865,66 @@ export async function ingestReviewForProject(
         issue.detail,
         projectId,
         sourceKey,
+        contentObjectKey,
       ),
     ),
+    ...(existing && existing.contentObjectKey !== contentObjectKey
+      ? [
+          DB.prepare(
+            `INSERT OR IGNORE INTO review_object_cleanup_queue (object_key, created_at)
+             SELECT ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM review_logs
+               WHERE project_id = ? AND source_key = ? AND content_object_key = ?
+             )`,
+          ).bind(existing.contentObjectKey, now, projectId, sourceKey, contentObjectKey),
+        ]
+      : []),
+    ...(createdContentObject
+      ? [
+          DB.prepare(
+            `DELETE FROM review_object_cleanup_queue
+             WHERE object_key = ?
+               AND EXISTS (
+                 SELECT 1 FROM review_logs
+                 WHERE project_id = ? AND source_key = ? AND content_object_key = ?
+               )`,
+          ).bind(contentObjectKey, projectId, sourceKey, contentObjectKey),
+        ]
+      : []),
+    DB.prepare(
+      `SELECT l.id FROM review_logs l
+       JOIN review_projects p ON p.id = l.project_id
+       WHERE l.project_id = ? AND l.source_key = ? AND l.content_object_key = ?
+         AND p.slug = ? AND p.enabled = 1`,
+    ).bind(projectId, sourceKey, contentObjectKey, storedProject.slug),
   ];
 
+  let results: D1Result[];
   try {
-    await DB.batch(statements);
+    results = await DB.batch(statements);
   } catch (error) {
+    if (createdContentObject) {
+      await markReviewObjectCleanupReady(DB, contentObjectKey);
+      await drainReviewObjectCleanupQueue(DB, FILES);
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `D1 原子更新失败，未提交部分结构化变更：${message}`,
       { cause: error },
     );
   }
+  if (!results.at(-1)?.results?.length) {
+    if (createdContentObject) {
+      await markReviewObjectCleanupReady(DB, contentObjectKey);
+      await drainReviewObjectCleanupQueue(DB, FILES);
+    }
+    throw new Error('审查项目已停用或同一来源已被并发更新，日志未写入。');
+  }
 
-  const identity = await first<{ id: number }>(
-    'SELECT id FROM review_logs WHERE project_id = ? AND source_key = ?',
-    [projectId, sourceKey],
-  );
-  if (!identity) throw new Error('日志已写入，但未能读取导入标识。');
-  const reviewId = identity.id;
-  await rebuildReviewSearch(reviewId);
+  const committedIdentity = results.at(-1)!.results[0] as { id: number };
+  const reviewId = committedIdentity.id;
+  await drainReviewObjectCleanupQueue(DB, FILES);
 
   const review = await first<ReviewSummary>(
     [
@@ -1854,6 +1948,58 @@ export async function ingestReviewForProject(
       parsedIssueCount: currentIssues.length,
     },
   };
+}
+
+async function drainReviewObjectCleanupQueue(
+  DB: D1Database,
+  FILES: R2Bucket,
+): Promise<void> {
+  const abandonedBefore = new Date(Date.now() - 15 * 60_000).toISOString();
+  let queued: D1Result<{ objectKey: string }>;
+  try {
+    queued = await DB.prepare(
+      `SELECT cleanup.object_key AS objectKey
+       FROM review_object_cleanup_queue cleanup
+       WHERE (cleanup.ready = 1 OR cleanup.created_at <= ?)
+         AND NOT EXISTS (
+          SELECT 1 FROM review_logs review
+          WHERE review.content_object_key = cleanup.object_key
+        )
+       ORDER BY cleanup.created_at, cleanup.object_key
+       LIMIT 100`,
+    ).bind(abandonedBefore).all<{ objectKey: string }>();
+  } catch {
+    return;
+  }
+
+  const objectKeys = (queued.results ?? []).map((item) => item.objectKey);
+  if (!objectKeys.length) return;
+  try {
+    await FILES.delete(objectKeys);
+    await DB.prepare(
+      `DELETE FROM review_object_cleanup_queue
+       WHERE object_key IN (SELECT value FROM json_each(?))
+         AND NOT EXISTS (
+           SELECT 1 FROM review_logs
+           WHERE review_logs.content_object_key = review_object_cleanup_queue.object_key
+         )`,
+    ).bind(JSON.stringify(objectKeys)).run();
+  } catch {
+    return;
+  }
+}
+
+async function markReviewObjectCleanupReady(
+  DB: D1Database,
+  objectKey: string,
+): Promise<void> {
+  try {
+    await DB.prepare(
+      'UPDATE review_object_cleanup_queue SET ready = 1 WHERE object_key = ?',
+    ).bind(objectKey).run();
+  } catch {
+    return;
+  }
 }
 
 function validateParsedReview(parsed: ReturnType<typeof parseReviewMarkdown>): void {

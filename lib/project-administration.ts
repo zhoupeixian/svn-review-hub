@@ -9,6 +9,8 @@ export const PROJECT_ADMIN_ACTIONS = [
   'project.create',
   'project.update',
   'project.reorder',
+  'project.disable',
+  'project.restore',
 ] as const;
 
 export type ProjectAdminAction = (typeof PROJECT_ADMIN_ACTIONS)[number];
@@ -231,6 +233,76 @@ export async function updateAdminProject(
   return updated;
 }
 
+export async function setAdminProjectEnabled(
+  user: ChatGPTUser,
+  projectId: number,
+  input: unknown,
+): Promise<AdminProject> {
+  await ensureReviewSchema();
+  const enabled = parseEnabledStatus(input);
+  const action: ProjectAdminAction = enabled ? 'project.restore' : 'project.disable';
+  const existing = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+  if (!existing) {
+    const error = new ProjectAdminError('审查项目不存在。', 'project_not_found', 404);
+    await writeAudit(user, {
+      project: { id: projectId },
+      snapshot: { id: projectId },
+      action,
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  if (existing.enabled === enabled) {
+    const code = enabled ? 'project_already_enabled' : 'project_already_disabled';
+    const error = new ProjectAdminError(
+      enabled ? '项目已经启用。' : '项目已经停用。',
+      code,
+      409,
+    );
+    await writeAudit(user, {
+      project: existing,
+      snapshot: existing,
+      action,
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const target = enabled ? 1 : 0;
+  const current = existing.enabled ? 1 : 0;
+  const results = await db().batch([
+    db().prepare(
+      `UPDATE review_projects SET enabled = ?, updated_at = ?
+       WHERE id = ? AND enabled = ? AND updated_at = ?`,
+    ).bind(target, now, projectId, current, existing.updatedAt),
+    auditProjectStatusSelectStatement(user, action, now, projectId, target),
+  ]);
+  const updateWriteCount = Number(results[0]?.meta.changes ?? 0);
+  const auditWriteCount = Number(results[1]?.meta.changes ?? 0);
+  if (updateWriteCount !== 1 || auditWriteCount !== 1) {
+    const latest = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+    const error = new ProjectAdminError(
+      '项目状态已变化，请刷新后重试。',
+      'project_status_changed',
+      409,
+    );
+    await writeAudit(user, {
+      project: latest ?? existing,
+      snapshot: latest ?? existing,
+      action,
+      result: 'failure',
+      failureCode: error.code,
+    });
+    throw error;
+  }
+  const updated = await firstProject(`${projectSelect()} WHERE id = ?`, [projectId]);
+  if (!updated) throw new Error('项目状态已更新，但无法读取更新结果。');
+  return updated;
+}
+
 export async function reorderAdminProjects(
   user: ChatGPTUser,
   input: unknown,
@@ -404,6 +476,17 @@ function parseProjectOrder(input: unknown): number[] {
   return ids;
 }
 
+function parseEnabledStatus(input: unknown): boolean {
+  const record = objectInput(input);
+  if (
+    typeof record.enabled !== 'boolean' ||
+    Object.keys(record).some((key) => key !== 'enabled')
+  ) {
+    throw new ProjectAdminError('项目状态请求无效。', 'invalid_project_status', 400);
+  }
+  return record.enabled;
+}
+
 function objectInput(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ProjectAdminError('请求内容必须是对象。', 'invalid_request', 400);
@@ -571,6 +654,37 @@ function auditProjectSetStatement(
     action,
     createdAt,
     ...projectSetGuard.values,
+  );
+}
+
+function auditProjectStatusSelectStatement(
+  user: ChatGPTUser,
+  action: ProjectAdminAction,
+  createdAt: string,
+  projectId: number,
+  enabled: number,
+): D1PreparedStatement {
+  return db().prepare(
+    `INSERT INTO project_admin_audits
+       (project_id_snapshot, project_slug_snapshot, project_name_snapshot,
+        project_snapshot_json, admin_user_id, admin_email_snapshot,
+        admin_display_name_snapshot, action, result, failure_code, created_at)
+     SELECT id, slug, name,
+            json_object('id', id, 'name', name, 'slug', slug,
+                        'description', description, 'displayOrder', display_order,
+                        'enabled', CASE WHEN enabled = 1 THEN json('true') ELSE json('false') END),
+            ?, ?, ?, ?, 'success', NULL, ?
+     FROM review_projects
+     WHERE id = ? AND enabled = ? AND updated_at = ? AND changes() = 1`,
+  ).bind(
+    user.userId,
+    user.email,
+    user.displayName,
+    action,
+    createdAt,
+    projectId,
+    enabled,
+    createdAt,
   );
 }
 

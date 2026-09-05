@@ -68,6 +68,7 @@ export const reviewLogs = sqliteTable(
       table.sourceKey,
     ),
     index('idx_review_logs_project_id').on(table.projectId),
+    index('idx_review_logs_content_object_key').on(table.contentObjectKey),
     index('idx_review_logs_log_date').on(table.logDate),
     index('idx_review_logs_severity').on(table.p1Count, table.p2Count),
     index('idx_review_logs_archive_date_id').on(
@@ -77,6 +78,12 @@ export const reviewLogs = sqliteTable(
     ),
   ],
 );
+
+export const reviewObjectCleanupQueue = sqliteTable('review_object_cleanup_queue', {
+  objectKey: text('object_key').primaryKey(),
+  createdAt: text('created_at').notNull(),
+  ready: integer('ready').notNull().default(1),
+});
 
 export const reviewRevisions = sqliteTable(
   'review_revisions',

@@ -35,6 +35,7 @@ describe.sequential('按项目同步日志', () => {
 
   beforeEach(async () => {
     await DB.batch([
+      DB.prepare('DELETE FROM review_object_cleanup_queue'),
       DB.prepare('DELETE FROM review_issue_events'),
       DB.prepare('DELETE FROM review_issues'),
       DB.prepare('DELETE FROM review_revisions'),
@@ -176,6 +177,285 @@ describe.sequential('按项目同步日志', () => {
     expect(await unknownProject.json()).toEqual(await disabledProject.json());
     expect(await wrongKey.json()).toEqual({ error: '项目或项目同步密钥无效。' });
     expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 0 });
+
+    await DB.prepare("UPDATE review_projects SET enabled = 1 WHERE slug = 'disabled'").run();
+    const restoredProject = await importReview(syncRequest('disabled', HAIHUA_KEY));
+    expect(restoredProject.status).toBe(201);
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 1 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/disabled/' })).objects).toHaveLength(1);
+  });
+
+  it('导入通过入口校验后项目被并发停用时不提交 D1 并清理新 R2 对象', async () => {
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 1').run();
+      return batch(statements);
+    });
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'concurrent-disable',
+        sourceName: 'concurrent-disable.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    )).rejects.toThrow('已停用');
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 0 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects).toEqual([]);
+  });
+
+  it('相同来源和内容重复同步时复用现有 R2 对象', async () => {
+    const input = {
+      markdown: reviewMarkdown(),
+      sourceKey: 'repeat-source',
+      sourceName: 'repeat.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+
+    await ingestReviewForProject({ id: 1, slug: 'zherp' }, input);
+    const before = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'repeat-source'",
+    ).first<{ objectKey: string }>();
+    await ingestReviewForProject({ id: 1, slug: 'zherp' }, input);
+    const after = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'repeat-source'",
+    ).first<{ objectKey: string }>();
+
+    expect(after?.objectKey).toBe(before?.objectKey);
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
+  it('相同来源内容变化且替换成功时删除失去引用的旧 R2 对象', async () => {
+    const baseInput = {
+      sourceKey: 'changed-source',
+      sourceName: 'changed.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: reviewMarkdown() },
+    );
+    const before = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'changed-source'",
+    ).first<{ objectKey: string }>();
+
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        ...baseInput,
+        markdown: reviewMarkdown().replace('两个项目应分别保存此问题。', '内容已更新。'),
+      },
+    );
+    const after = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'changed-source'",
+    ).first<{ objectKey: string }>();
+
+    expect(after?.objectKey).not.toBe(before?.objectKey);
+    await expect(runtime.FILES.get(before!.objectKey)).resolves.toBeNull();
+    await expect(runtime.FILES.get(after!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('内容已更新。');
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
+  it('旧 R2 对象清理失败不推翻已提交导入，并由后续同步重试清理', async () => {
+    const baseInput = {
+      sourceKey: 'cleanup-retry-source',
+      sourceName: 'cleanup-retry.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: reviewMarkdown() },
+    );
+    const before = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'cleanup-retry-source'",
+    ).first<{ objectKey: string }>();
+    vi.spyOn(runtime.FILES, 'delete').mockRejectedValueOnce(new Error('temporary R2 failure'));
+    const changedMarkdown = reviewMarkdown().replace(
+      '两个项目应分别保存此问题。',
+      '清理失败后仍已提交。',
+    );
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: changedMarkdown },
+    )).resolves.toMatchObject({ sourceName: 'cleanup-retry.md' });
+    const committed = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'cleanup-retry-source'",
+    ).first<{ objectKey: string }>();
+    expect(committed?.objectKey).not.toBe(before?.objectKey);
+    await expect(runtime.FILES.get(committed!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('清理失败后仍已提交。');
+    await expect(runtime.FILES.get(before!.objectKey)).resolves.not.toBeNull();
+    expect(await DB.prepare(
+      'SELECT object_key AS objectKey FROM review_object_cleanup_queue',
+    ).first()).toEqual({ objectKey: before!.objectKey });
+
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: changedMarkdown },
+    );
+    await expect(runtime.FILES.get(before!.objectKey)).resolves.toBeNull();
+    expect(await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_object_cleanup_queue',
+    ).first()).toEqual({ count: 0 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
+  it('D1 导入失败且 R2 清理暂时失败时保留清理意图，并由后续同步回收孤儿对象', async () => {
+    const input = {
+      markdown: reviewMarkdown(),
+      sourceKey: 'failed-import-cleanup-retry',
+      sourceName: 'failed-import-cleanup-retry.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+    const putSpy = vi.spyOn(runtime.FILES, 'put');
+    vi.spyOn(runtime.FILES, 'delete').mockRejectedValueOnce(new Error('temporary R2 failure'));
+    vi.spyOn(DB, 'batch').mockRejectedValueOnce(new Error('simulated D1 failure'));
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      input,
+    )).rejects.toThrow('D1 原子更新失败');
+
+    const orphanKey = String(putSpy.mock.calls[0]?.[0]);
+    expect(orphanKey).toContain('review-logs/zherp/');
+    await expect(runtime.FILES.get(orphanKey)).resolves.not.toBeNull();
+    expect(await DB.prepare(
+      'SELECT object_key AS objectKey FROM review_object_cleanup_queue',
+    ).first()).toEqual({ objectKey: orphanKey });
+
+    await ingestReviewForProject({ id: 1, slug: 'zherp' }, input);
+
+    await expect(runtime.FILES.get(orphanKey)).resolves.toBeNull();
+    expect(await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_object_cleanup_queue',
+    ).first()).toEqual({ count: 0 });
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
+  it('并发同步清理队列时不删除尚未完成 D1 提交的新 R2 对象', async () => {
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await ingestReviewForProject(
+        { id: 1, slug: 'zherp' },
+        {
+          markdown: reviewMarkdown().replace('项目隔离问题', '并发清理触发器'),
+          sourceKey: 'cleanup-trigger',
+          sourceName: 'cleanup-trigger.md',
+          importedBy: 'test',
+          syncMode: 'automation',
+        },
+      );
+      return batch(statements);
+    });
+
+    const review = await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'inflight-cleanup-reservation',
+        sourceName: 'inflight-cleanup-reservation.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    );
+    const stored = await DB.prepare(
+      'SELECT content_object_key AS objectKey FROM review_logs WHERE id = ?',
+    ).bind(review.id).first<{ objectKey: string }>();
+
+    await expect(runtime.FILES.get(stored!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('项目隔离问题');
+  });
+
+  it('同一来源并发替换时过期请求不覆盖胜者且清理自己的 R2 对象', async () => {
+    const baseInput = {
+      sourceKey: 'racing-source',
+      sourceName: 'racing.md',
+      importedBy: 'test',
+      syncMode: 'automation' as const,
+    };
+    await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      { ...baseInput, markdown: reviewMarkdown() },
+    );
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await ingestReviewForProject(
+        { id: 1, slug: 'zherp' },
+        {
+          ...baseInput,
+          markdown: reviewMarkdown().replace('两个项目应分别保存此问题。', '胜者内容。'),
+        },
+      );
+      return batch(statements);
+    });
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        ...baseInput,
+        markdown: reviewMarkdown().replace('两个项目应分别保存此问题。', '过期请求内容。'),
+      },
+    )).rejects.toThrow('并发更新');
+
+    const stored = await DB.prepare(
+      "SELECT content_object_key AS objectKey FROM review_logs WHERE source_key = 'racing-source'",
+    ).first<{ objectKey: string }>();
+    await expect(runtime.FILES.get(stored!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('胜者内容。');
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects)
+      .toHaveLength(1);
+  });
+
+  it('相同内容的并发胜者已提交时失败导入只清理自己的 R2 对象', async () => {
+    const winner = await ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'winner',
+        sourceName: 'winner.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    );
+    const stored = await DB.prepare(
+      'SELECT content_object_key AS objectKey FROM review_logs WHERE id = ?',
+    ).bind(winner.id).first<{ objectKey: string }>();
+    const putSpy = vi.spyOn(runtime.FILES, 'put');
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 1').run();
+      return batch(statements);
+    });
+
+    await expect(ingestReviewForProject(
+      { id: 1, slug: 'zherp' },
+      {
+        markdown: reviewMarkdown(),
+        sourceKey: 'loser',
+        sourceName: 'loser.md',
+        importedBy: 'test',
+        syncMode: 'automation',
+      },
+    )).rejects.toThrow('已停用');
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_logs').first()).toEqual({ count: 1 });
+    expect(stored?.objectKey).toBeTruthy();
+    expect(String(putSpy.mock.calls[0]?.[0])).not.toBe(stored?.objectKey);
+    expect((await runtime.FILES.list({ prefix: 'review-logs/zherp/' })).objects.map((object) => object.key))
+      .toEqual([stored?.objectKey]);
+    await expect(runtime.FILES.get(stored!.objectKey).then((object) => object?.text()))
+      .resolves.toContain('项目隔离问题');
   });
 
   it('主密钥丢失或错误时拒绝解密，不使用旧全站密钥覆盖既有密文', async () => {

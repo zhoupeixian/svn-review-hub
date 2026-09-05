@@ -69,7 +69,7 @@ describe('全局项目维护 UI', () => {
     render(<ProjectAdminManager initialProjects={projects} initialAudits={audits} />);
     expect(screen.getByRole('heading', { name: '维护审查项目' })).toBeTruthy();
     expect((screen.getByLabelText('ZHERP 项目标识') as HTMLInputElement).readOnly).toBe(true);
-    expect(screen.getByRole('link', { name: '进入 ZHERP 日志管理' }).getAttribute('href'))
+    expect(screen.getByRole('link', { name: '进入 ZHERP 历史管理' }).getAttribute('href'))
       .toBe('/projects/zherp/admin');
 
     await userEvent.type(screen.getByLabelText('新项目名称'), '财务项目');
@@ -131,14 +131,26 @@ describe('全局项目维护 UI', () => {
     expect(screen.getByText('2026-09-01 18:00:00')).toBeTruthy();
   });
 
-  it('停用项目不显示当前必然返回 404 的日志管理链接', () => {
+  it('停用和恢复项目并始终保留管理员历史入口', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fetchMock = vi.spyOn(global, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ project: { ...projects[1], enabled: false } }))
+      .mockResolvedValueOnce(jsonResponse({ project: { ...projects[1], enabled: true } }));
     render(<ProjectAdminManager
-      initialProjects={[{ ...projects[1], enabled: false }]}
+      initialProjects={[projects[1]]}
       initialAudits={[]}
     />);
 
-    expect(screen.queryByRole('link', { name: '进入 海华项目 日志管理' })).toBeNull();
-    expect(screen.getByText('项目已停用，恢复后可进入日志管理')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '进入 海华项目 历史管理' }).getAttribute('href'))
+      .toBe('/projects/haihua/admin');
+    await userEvent.click(screen.getByRole('button', { name: '停用 海华项目' }));
+    expect(await screen.findByRole('button', { name: '恢复 海华项目' })).toBeTruthy();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/projects/2/status');
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({ enabled: false });
+
+    await userEvent.click(screen.getByRole('button', { name: '恢复 海华项目' }));
+    expect(await screen.findByRole('button', { name: '停用 海华项目' })).toBeTruthy();
+    expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ enabled: true });
   });
 
   it('同排序值项目改名后按服务端规则重排本地目录位置', async () => {

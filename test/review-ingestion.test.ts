@@ -825,7 +825,7 @@ describe('审查日志合并导入', () => {
     ]);
   });
 
-  it('D1 导入中途失败时回滚日志、Revision 和问题，但保留先写成功的 R2 原文', async () => {
+  it('D1 导入中途失败时回滚结构化数据并清理本次新写入的 R2 原文', async () => {
     await ingestReview(ingestInput(initialMarkdown()));
     const reviewBefore = await reviewStorageRow();
     const issuesBefore = await issueRows();
@@ -839,11 +839,7 @@ describe('审查日志合并导入', () => {
     expect(await reviewStorageRow()).toEqual(reviewBefore);
     expect(await issueRows()).toEqual(issuesBefore);
     expect(await revisionRows()).toEqual(revisionsBefore);
-    const objectsAfter = await bucketKeys();
-    expect(objectsAfter).toHaveLength(objectsBefore.length + 1);
-    expect(objectsAfter).toEqual(
-      expect.arrayContaining(objectsBefore),
-    );
+    expect(await bucketKeys()).toEqual(objectsBefore);
   });
 
   it('自动同步重复导入时返回兼容的导入计数', async () => {

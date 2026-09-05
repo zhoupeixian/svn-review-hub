@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/vitest-plugin/types" />
 
 import { env } from 'cloudflare:workers';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PATCH as patchProjectIssue } from '@/app/api/projects/[slug]/issues/[id]/status/route';
 import { hashAnonymousSource } from '@/lib/anonymous-rate-limit';
 import { ensureReviewSchema, ingestReview, ingestReviewForProject } from '@/lib/reviews';
@@ -102,6 +102,42 @@ describe.sequential('按项目隔离匿名问题协作', () => {
     expect(await DB.prepare(
       'SELECT issue_id AS issueId FROM review_issue_events',
     ).all()).toMatchObject({ results: [{ issueId: haihuaIssue.id }] });
+  });
+
+  it('停用项目拒绝匿名更新且不消耗限流，恢复后重新允许更新', async () => {
+    const issue = await issueForProject('haihua');
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 2').run();
+
+    const disabled = await patchProjectIssue(updateRequest('192.0.2.13'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
+    });
+
+    expect(disabled.status).toBe(404);
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_issue_events').first()).toEqual({ count: 0 });
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM anonymous_update_limits').first()).toEqual({ count: 0 });
+
+    await DB.prepare('UPDATE review_projects SET enabled = 1 WHERE id = 2').run();
+    const restored = await patchProjectIssue(updateRequest('192.0.2.13'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
+    });
+    expect(restored.status).toBe(200);
+  });
+
+  it('匿名更新通过入口校验后项目被并发停用时不提交问题或事件', async () => {
+    const issue = await issueForProject('haihua');
+    const batch = DB.batch.bind(DB);
+    vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+      await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 2').run();
+      return batch(statements);
+    });
+
+    const response = await patchProjectIssue(updateRequest('192.0.2.14'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(issue.id) }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await issueForProject('haihua')).toMatchObject({ status: 'open', version: 0 });
+    expect(await DB.prepare('SELECT COUNT(*) AS count FROM review_issue_events').first()).toEqual({ count: 0 });
   });
 
   it('同一匿名来源在不同项目分别限流并记录项目内来源摘要', async () => {

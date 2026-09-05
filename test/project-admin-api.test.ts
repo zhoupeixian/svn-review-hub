@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatGPTUser } from '../app/chatgpt-auth';
 import { GET as getAudits } from '../app/api/admin/project-audits/route';
 import { PATCH as updateProject } from '../app/api/admin/projects/[id]/route';
+import { PATCH as updateProjectStatus } from '../app/api/admin/projects/[id]/status/route';
 import { PUT as reorderProjects } from '../app/api/admin/projects/order/route';
 import { GET as getProjects, POST as createProject } from '../app/api/admin/projects/route';
 import { projectAdminErrorResponse } from '../lib/global-admin-api';
@@ -182,6 +183,75 @@ describe.sequential('全局审查项目维护与审计 API', () => {
     expect((await audits())[0]).toMatchObject({
       projectSlug: 'haihua', action: 'project.update', result: 'failure', failureCode: 'duplicate_name',
     });
+  });
+
+  it('停用和恢复项目会更新公共目录并写入不含密钥的审计', async () => {
+    const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+    await DB.prepare(
+      "UPDATE review_projects SET sync_key_encrypted = 'v1.sensitive-ciphertext' WHERE id = ?",
+    ).bind(projectId).run();
+
+    const disabled = await updateProjectStatus(
+      jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: false }),
+      { params: Promise.resolve({ id: String(projectId) }) },
+    );
+    const directoryWhileDisabled = await getReviewProjectDirectory();
+    const repeated = await updateProjectStatus(
+      jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: false }),
+      { params: Promise.resolve({ id: String(projectId) }) },
+    );
+    const restored = await updateProjectStatus(
+      jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: true }),
+      { params: Promise.resolve({ id: String(projectId) }) },
+    );
+
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toMatchObject({ project: { id: projectId, enabled: false } });
+    expect(directoryWhileDisabled.map((project) => project.slug)).not.toContain('haihua');
+    expect(repeated.status).toBe(409);
+    expect(await repeated.json()).toMatchObject({ code: 'project_already_disabled' });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ project: { id: projectId, enabled: true } });
+    expect((await getReviewProjectDirectory()).map((project) => project.slug)).toContain('haihua');
+    const statusAudits = (await audits()).filter((audit) =>
+      audit.action === 'project.disable' || audit.action === 'project.restore');
+    expect(statusAudits.map((audit) => [audit.action, audit.result, audit.failureCode])).toEqual([
+      ['project.restore', 'success', null],
+      ['project.disable', 'failure', 'project_already_disabled'],
+      ['project.disable', 'success', null],
+    ]);
+    expect(statusAudits.every((audit) => !audit.projectSnapshot.includes('sensitive-ciphertext'))).toBe(true);
+    expect(await (await FILES.get('sentinel/project-admin.txt'))?.text()).toBe('R2 不应被项目维护修改');
+  });
+
+  it('同毫秒的并发停用也拒绝借用胜出请求的状态伪造成功审计', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-02T00:00:00.000Z'));
+    try {
+      const projectId = await createProjectAndId('海华项目', 'haihua', 10);
+      const batch = DB.batch.bind(DB);
+      vi.spyOn(DB, 'batch').mockImplementationOnce(async (statements) => {
+        await DB.prepare(
+          "UPDATE review_projects SET enabled = 0, updated_at = '2026-09-02T00:00:00.000Z' WHERE id = ?",
+        ).bind(projectId).run();
+        return batch(statements);
+      });
+
+      const response = await updateProjectStatus(
+        jsonRequest(`/api/admin/projects/${projectId}/status`, 'PATCH', { enabled: false }),
+        { params: Promise.resolve({ id: String(projectId) }) },
+      );
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'project_status_changed' });
+      const statusAudits = (await audits()).filter((audit) => audit.action === 'project.disable');
+      expect(statusAudits).toHaveLength(1);
+      expect(statusAudits[0]).toMatchObject({
+        result: 'failure', failureCode: 'project_status_changed',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('全量排序原子更新目录顺序，并为每个项目保存排序快照', async () => {

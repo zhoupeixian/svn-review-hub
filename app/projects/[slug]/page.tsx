@@ -3,9 +3,9 @@ import { notFound } from 'next/navigation';
 import HomeQuickSearch from '@/app/components/home-quick-search';
 import ProjectSwitcher from '@/app/components/project-switcher';
 import ReviewExplorer from '@/app/review-explorer';
+import { getAccessibleReviewProject } from '@/lib/project-api';
 import {
   getCurrentReviewStats,
-  getEnabledReviewProject,
   getReviewPage,
   getReviewProjectDirectory,
   getSyncHealth,
@@ -19,7 +19,7 @@ type Props = {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) return { title: '审查项目不存在' };
   return {
     title: `${project.name} · SVN 审查日志`,
@@ -29,7 +29,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function ProjectHome({ params }: Props) {
   const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) notFound();
 
   const [page, stats, health, directory] = await Promise.all([
@@ -77,6 +77,11 @@ export default async function ProjectHome({ params }: Props) {
       </header>
 
       <section className="mx-auto max-w-7xl px-5 pb-8 pt-10 sm:px-8 sm:pt-14">
+        {!project.enabled && (
+          <p role="status" className="mb-6 rounded-xl border border-[#dccb9c] bg-[#fff8e5] px-4 py-3 text-sm font-bold text-[#795d1e]">
+            此项目已停用；当前仅全局管理员可查看和整理历史数据。
+          </p>
+        )}
         <div className="grid gap-7 lg:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)] lg:items-end">
           <div>
             <p className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-[#37735a]">

@@ -15,6 +15,7 @@ vi.mock('@/app/chatgpt-auth', () => ({
 }));
 
 import { POST as uploadProjectReview } from '@/app/api/projects/[slug]/reviews/route';
+import { GET as listProjectReviews } from '@/app/api/projects/[slug]/reviews/route';
 import { POST as archiveProjectReviews } from '@/app/api/projects/[slug]/reviews/archive/route';
 import { POST as restoreProjectReviews } from '@/app/api/projects/[slug]/reviews/restore/route';
 import { GET as exportProjectReviews } from '@/app/api/projects/[slug]/reviews/export/route';
@@ -219,6 +220,61 @@ describe.sequential('按审查项目管理日志', () => {
       { params: Promise.resolve({ slug: 'haihua', id: String(zherpId) }) },
     );
     expect(crossRaw.status).toBe(404);
+  });
+
+  it('停用期间管理员仍可查看导出归档和恢复历史，但不能手工上传', async () => {
+    const uploaded = await uploadProjectReview(uploadRequest(), {
+      params: Promise.resolve({ slug: 'haihua' }),
+    });
+    expect(uploaded.status).toBe(201);
+    const haihuaId = await reviewId('haihua');
+    await DB.prepare('UPDATE review_projects SET enabled = 0 WHERE id = 2').run();
+    const objectsBefore = await FILES.list({ prefix: 'review-logs/haihua/' });
+
+    const listed = await listProjectReviews(
+      new Request('https://review.test/api/projects/haihua/reviews?scope=active'),
+      { params: Promise.resolve({ slug: 'haihua' }) },
+    );
+    const reviewsExport = await exportProjectReviews(
+      new Request('https://review.test/api/projects/haihua/reviews/export'),
+      { params: Promise.resolve({ slug: 'haihua' }) },
+    );
+    const issuesExport = await exportProjectIssues(
+      new Request('https://review.test/api/projects/haihua/issues/export'),
+      { params: Promise.resolve({ slug: 'haihua' }) },
+    );
+    const raw = await downloadProjectReview(new Request('https://review.test'), {
+      params: Promise.resolve({ slug: 'haihua', id: String(haihuaId) }),
+    });
+    const rejectedUpload = await uploadProjectReview(uploadRequest(), {
+      params: Promise.resolve({ slug: 'haihua' }),
+    });
+
+    expect(listed.status).toBe(200);
+    expect(reviewsExport.status).toBe(200);
+    expect(issuesExport.status).toBe(200);
+    expect(raw.status).toBe(200);
+    expect(rejectedUpload.status).toBe(404);
+    expect((await FILES.list({ prefix: 'review-logs/haihua/' })).objects).toHaveLength(objectsBefore.objects.length);
+
+    const preview = await archiveProjectReviews(
+      jsonRequest({ mode: 'preview', ids: [haihuaId] }),
+      { params: Promise.resolve({ slug: 'haihua' }) },
+    );
+    expect(preview.status).toBe(200);
+    const { previewToken } = await preview.json() as { previewToken: string };
+    const archived = await archiveProjectReviews(
+      jsonRequest({ mode: 'confirm', previewToken }),
+      { params: Promise.resolve({ slug: 'haihua' }) },
+    );
+    expect(archived.status).toBe(200);
+    expect(await archivedAt(haihuaId)).not.toBeNull();
+    const restored = await restoreProjectReviews(
+      jsonRequest({ ids: [haihuaId] }),
+      { params: Promise.resolve({ slug: 'haihua' }) },
+    );
+    expect(restored.status).toBe(200);
+    expect(await archivedAt(haihuaId)).toBeNull();
   });
 });
 

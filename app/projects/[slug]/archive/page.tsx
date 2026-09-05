@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import ArchiveExplorer, { type ArchiveFilters } from '@/app/archive/archive-explorer';
-import { getEnabledReviewProject, getReviewPage } from '@/lib/reviews';
+import { getAccessibleReviewProject } from '@/lib/project-api';
+import { getReviewPage } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +12,7 @@ type Props = {
 
 export default async function ProjectArchivePage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) notFound();
   const raw = await searchParams;
   const value = (key: string) => typeof raw[key] === 'string' ? raw[key] as string : undefined;

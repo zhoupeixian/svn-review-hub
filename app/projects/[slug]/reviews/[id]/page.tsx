@@ -4,8 +4,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import IssueStatusPanel from '@/app/components/issue-status-panel';
 import ReviewMarkdownLink, { reviewMarkdownUrlTransform } from '@/app/components/review-markdown-link';
+import { getAccessibleReviewProject } from '@/lib/project-api';
 import { relativizeProjectPaths } from '@/lib/project-paths';
-import { getEnabledReviewProject, getReviewDetail } from '@/lib/reviews';
+import { getReviewDetail } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +16,7 @@ type Props = {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug, id } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   const review = project ? await getReviewDetail(project.id, Number(id)) : null;
   if (!project || !review) return { title: '审查日志不存在' };
   return {
@@ -26,7 +27,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function ProjectReviewPage({ params }: Props) {
   const { slug, id } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) notFound();
   const review = await getReviewDetail(project.id, Number(id));
   if (!review) notFound();
@@ -75,7 +76,7 @@ export default async function ProjectReviewPage({ params }: Props) {
                   <IssueStatusPanel
                     issue={issue}
                     statusApiPath={`/api/projects/${encodeURIComponent(project.slug)}/issues/${issue.id}/status`}
-                    readOnly={review.archivedAt !== null}
+                    readOnly={review.archivedAt !== null || !project.enabled}
                   />
                 </article>
               ))}

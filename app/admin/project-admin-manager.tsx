@@ -20,6 +20,8 @@ const ACTION_LABELS: Record<ProjectAdminAction, string> = {
   'project.create': '创建项目',
   'project.update': '编辑项目',
   'project.reorder': '调整排序',
+  'project.disable': '停用项目',
+  'project.restore': '恢复项目',
 };
 
 const UTF8_ENCODER = new TextEncoder();
@@ -110,6 +112,28 @@ export default function ProjectAdminManager({
     });
   }
 
+  async function setProjectEnabled(project: AdminProject, enabled: boolean) {
+    if (!enabled && !window.confirm(`确认停用项目“${project.name}”？停用期间普通协作者将无法访问或写入。`)) {
+      return;
+    }
+    await run(async () => {
+      const result = await request<{ project: AdminProject }>(
+        `/api/admin/projects/${project.id}/status`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        },
+      );
+      setProjects((current) => current.map((item) =>
+        item.id === result.project.id ? result.project : item,
+      ));
+      setMessage(enabled
+        ? `已恢复项目 ${result.project.name}。`
+        : `已停用项目 ${result.project.name}。`);
+    });
+  }
+
   async function filterAudits(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -196,6 +220,7 @@ export default function ProjectAdminManager({
                 <div>
                   <p className="text-xs font-bold text-[#748278]">目录位置 {index + 1}</p>
                   <p className="mt-1 text-lg font-black text-[#28503c]">{project.name}</p>
+                  <p className="mt-1 text-xs font-bold text-[#718077]">{project.enabled ? '启用中' : '已停用'}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" disabled={busy || index === 0} onClick={() => moveProject(index, -1)} className="rounded-lg border border-[#cddace] px-3 py-2 text-xs font-bold disabled:opacity-40">
@@ -245,15 +270,19 @@ export default function ProjectAdminManager({
                 <button type="button" disabled={busy} onClick={() => saveProject(project)} className="rounded-xl bg-[#1e6349] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
                   保存 {project.name} 项目资料
                 </button>
-                {project.enabled ? (
-                  <a href={`/projects/${project.slug}/admin`} className="rounded-xl border border-[#bfcfc1] px-4 py-2.5 text-sm font-bold text-[#245d46]">
-                    进入 {project.name} 日志管理
-                  </a>
-                ) : (
-                  <span className="rounded-xl bg-[#eef2ed] px-4 py-2.5 text-sm font-bold text-[#6b7a71]">
-                    项目已停用，恢复后可进入日志管理
-                  </span>
-                )}
+                <a href={`/projects/${project.slug}/admin`} className="rounded-xl border border-[#bfcfc1] px-4 py-2.5 text-sm font-bold text-[#245d46]">
+                  进入 {project.name} 历史管理
+                </a>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setProjectEnabled(project, !project.enabled)}
+                  className={project.enabled
+                    ? 'rounded-xl border border-[#d7b9ae] px-4 py-2.5 text-sm font-bold text-[#8a4331] disabled:opacity-50'
+                    : 'rounded-xl bg-[#1e6349] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50'}
+                >
+                  {project.enabled ? `停用 ${project.name}` : `恢复 ${project.name}`}
+                </button>
               </div>
             </article>
           );

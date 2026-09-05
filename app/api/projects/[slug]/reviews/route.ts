@@ -1,6 +1,6 @@
 import { parseReviewFilters } from '@/lib/review-filters';
-import { handleEnabledReviewProject } from '@/lib/project-api';
-import { getEnabledReviewProject, getReviewPage } from '@/lib/reviews';
+import { getAccessibleReviewProject, handleEnabledReviewProject } from '@/lib/project-api';
+import { getReviewPage } from '@/lib/reviews';
 
 type Context = {
   params: Promise<{ slug: string }>;
@@ -8,7 +8,7 @@ type Context = {
 
 export async function GET(request: Request, { params }: Context) {
   const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) return Response.json({ error: '审查项目不存在。' }, { status: 404 });
 
   try {

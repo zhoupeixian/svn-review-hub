@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import IssueExplorer from '@/app/issues/issue-explorer';
-import { getEnabledReviewProject, getIssuePage } from '@/lib/reviews';
+import { getAccessibleReviewProject } from '@/lib/project-api';
+import { getIssuePage } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +12,7 @@ type Props = {
 
 export default async function ProjectIssuesPage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const project = await getEnabledReviewProject(slug);
+  const project = await getAccessibleReviewProject(slug);
   if (!project) notFound();
   const raw = await searchParams;
   const value = (key: string) => typeof raw[key] === 'string' ? raw[key] as string : undefined;

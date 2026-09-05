@@ -68,8 +68,10 @@ export async function updateIssueStatusForProject(
          SELECT i.id, i.status, ?, ?, ?, ?
          FROM review_issues i
          JOIN review_logs l ON l.id = i.review_id
+         JOIN review_projects p ON p.id = l.project_id
          WHERE i.id = ? AND l.project_id = ?
-           AND i.source_current = 1 AND i.version = ? AND l.archived_at IS NULL`,
+           AND i.source_current = 1 AND i.version = ? AND l.archived_at IS NULL
+           AND p.enabled = 1`,
       ).bind(
         input.status,
         input.note,
@@ -85,8 +87,9 @@ export async function updateIssueStatusForProject(
          WHERE id = ? AND source_current = 1 AND version = ?
            AND EXISTS (
              SELECT 1 FROM review_logs l
+             JOIN review_projects p ON p.id = l.project_id
              WHERE l.id = review_issues.review_id
-               AND l.project_id = ? AND l.archived_at IS NULL
+               AND l.project_id = ? AND l.archived_at IS NULL AND p.enabled = 1
            )
          RETURNING version, status_updated_at AS statusUpdatedAt`,
       ).bind(
@@ -100,11 +103,15 @@ export async function updateIssueStatusForProject(
     ]);
     if (!updated.results?.length) {
       const latest = await db.prepare(
-        `SELECT i.version
+        `SELECT i.version, p.enabled AS projectEnabled
          FROM review_issues i
          JOIN review_logs l ON l.id = i.review_id
+         JOIN review_projects p ON p.id = l.project_id
          WHERE i.id = ? AND l.project_id = ?`,
-      ).bind(issueId, projectId).first<{ version: number }>();
+      ).bind(issueId, projectId).first<{ version: number; projectEnabled: number }>();
+      if (latest?.projectEnabled !== 1) {
+        return Response.json({ error: '未找到当前问题。' }, { status: 404 });
+      }
       return Response.json(
         { error: '问题版本已变化，请刷新后重试。', currentVersion: latest?.version ?? current.version },
         { status: 409 },
