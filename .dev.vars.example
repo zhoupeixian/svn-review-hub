@@ -1,3 +1,5 @@
 # 仅供站点服务端使用。请在本地 .dev.vars 和部署环境中分别配置，
 # 不要复制到自动化主机的 review-portal.env。
 ANONYMOUS_SOURCE_HASH_KEY=replace-with-at-least-32-random-characters
+# 生成独立的 32 字节随机值并以 Base64 保存；主密钥丢失后，已有项目同步密钥无法恢复。
+REVIEW_SYNC_MASTER_KEY=replace-with-base64-encoded-32-byte-random-key

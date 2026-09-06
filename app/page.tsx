@@ -19,7 +19,7 @@ export default async function Home() {
               <span className="block text-xs text-[#66766d]">项目目录</span>
             </span>
           </a>
-          <a href="/admin" className="rounded-xl border border-[#bfd0c0] px-4 py-2 text-sm font-bold text-[#245d46]">
+          <a href="/admin/projects" className="rounded-xl border border-[#bfd0c0] px-4 py-2 text-sm font-bold text-[#245d46]">
             管理入口
           </a>
         </div>
