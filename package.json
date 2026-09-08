@@ -12,6 +12,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "vitest",
     "db:generate": "drizzle-kit generate",
+    "smoke:production": "node scripts/smoke-production.mjs",
     "sync:reviews": "node scripts/sync-local-reviews.mjs"
   },
   "dependencies": {
