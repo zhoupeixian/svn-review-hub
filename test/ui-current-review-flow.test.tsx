@@ -101,6 +101,9 @@ describe('当前审查协作 UI', () => {
     expect(screen.queryByText('审查项目')).toBeNull();
     expect(screen.getByText('当前项目', { selector: '.project-switcher-current' })).toBeTruthy();
 
+    await userEvent.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: '当前项目：海华项目' }));
+
     await userEvent.keyboard('{Escape}');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(document.activeElement).toBe(trigger);

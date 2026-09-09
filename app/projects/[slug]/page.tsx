@@ -45,7 +45,7 @@ export default async function ProjectHome({ params }: Props) {
   return (
     <main className="min-h-screen bg-[#f6f7f3] text-[#17211d]">
       <header className="border-b border-[#dce4dc] bg-[#fdfefc]/95">
-        <div className="project-home-header mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3 sm:px-8">
+        <div className="project-home-header mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-3 sm:flex-nowrap sm:px-8">
           <ProjectSwitcher
             currentSlug={project.slug}
             projects={directory.map(({ name, slug: projectSlug }) => ({ name, slug: projectSlug }))}

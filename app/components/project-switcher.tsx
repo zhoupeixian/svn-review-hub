@@ -51,6 +51,10 @@ export default function ProjectSwitcher({ currentSlug, projects }: Props) {
   function handleTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== 'ArrowDown') return;
     event.preventDefault();
+    if (open) {
+      firstOptionRef.current?.focus();
+      return;
+    }
     focusFirstOnOpen.current = true;
     setOpen(true);
   }
