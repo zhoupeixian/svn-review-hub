@@ -45,23 +45,14 @@ export default async function ProjectHome({ params }: Props) {
   return (
     <main className="min-h-screen bg-[#f6f7f3] text-[#17211d]">
       <header className="border-b border-[#dce4dc] bg-[#fdfefc]/95">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-4 sm:px-8">
-          <a href={basePath} className="flex items-center gap-3">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#1d5b46] text-sm font-black text-white">
-              {project.name.slice(0, 1).toUpperCase()}
-            </span>
-            <span>
-              <span className="block text-sm font-bold tracking-tight">{project.name}</span>
-              <span className="block text-xs text-[#66766d]">SVN 审查日志</span>
-            </span>
-          </a>
+        <div className="project-home-header mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3 sm:px-8">
           <ProjectSwitcher
             currentSlug={project.slug}
             projects={directory.map(({ name, slug: projectSlug }) => ({ name, slug: projectSlug }))}
           />
           <nav className="flex items-center gap-2 text-sm">
-            <a href="/" className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
-              项目目录
+            <a href={`${basePath}/issues`} className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
+              问题看板
             </a>
             <a href={`${basePath}/archive`} className="rounded-lg px-3 py-2 text-[#456153] hover:bg-[#e9f0ea]">
               归档库

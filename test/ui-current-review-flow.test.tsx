@@ -70,7 +70,7 @@ describe('当前审查协作 UI', () => {
     expect(screen.getAllByText('等待首次同步')).toHaveLength(2);
   });
 
-  it('项目切换和项目内日志链接始终进入目标项目且不继承筛选状态', async () => {
+  it('项目目录独立显示，项目切换下拉只保留项目列表并支持键盘和外部点击关闭', async () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [{ ...review, id: 2, logDate: '2026-08-26' }], nextCursor: null, hasMore: false,
     }), { status: 200 }));
@@ -89,7 +89,30 @@ describe('当前审查协作 UI', () => {
       />
     </>);
 
+    const trigger = screen.getByRole('button', { name: '切换审查项目' });
+    expect(screen.getByRole('link', { name: '项目目录' }).getAttribute('href')).toBe('/');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('link', { name: '切换到 ZHERP' })).toBeNull();
+
+    await userEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('link', { name: '切换到 ZHERP' }).getAttribute('href')).toBe('/projects/zherp');
+    expect(screen.queryByRole('link', { name: '查看全部项目' })).toBeNull();
+    expect(screen.queryByText('审查项目')).toBeNull();
+    expect(screen.getByText('当前项目', { selector: '.project-switcher-current' })).toBeTruthy();
+
+    await userEvent.keyboard('{Escape}');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+
+    await userEvent.click(trigger);
+    fireEvent.pointerDown(document.body);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+
+    trigger.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: '当前项目：海华项目' }));
     expect(screen.getByRole('search').getAttribute('action')).toBe('/projects/haihua/issues');
     expect(screen.getByRole('link', { name: '打开审查日志 →' }).getAttribute('href')).toBe('/projects/haihua/reviews/1');
     await userEvent.click(screen.getByRole('button', { name: '加载更多日志' }));

@@ -2,6 +2,42 @@ import { describe, expect, it } from 'vitest';
 import { parseReviewMarkdown } from '../lib/review-parser';
 
 describe('真实审查日志格式兼容', () => {
+  it('2026-09-08：严重级计数以结构化问题为唯一事实来源', () => {
+    const parsed = parseReviewMarkdown([
+      '# ZHERP 当日 SVN 提交审查日志',
+      '',
+      '日期：2026-09-08',
+      '',
+      '总体结论：本轮发现 3 项需合并前修复的 P1 财务报表问题，以及 3 项 P2 功能/兼容性问题。',
+      '',
+      '### P1',
+      '',
+      '#### 第一个 P1',
+      '',
+      '详情。',
+      '',
+      '### P2',
+      '',
+      '#### 第一个 P2',
+      '',
+      '详情。',
+    ].join('\n'));
+
+    expect(parsed.issues).toHaveLength(2);
+    expect(parsed).toMatchObject({ p1Count: 1, p2Count: 1, p3Count: 0 });
+  });
+
+  it('不把只有摘要数量、没有结构化问题章节的文案当成问题', () => {
+    const parsed = parseReviewMarkdown([
+      '# ZHERP 当日 SVN 提交审查日志',
+      '日期：2026-09-08',
+      '总体结论：草稿预计保留 9 个 P1，但本文没有结构化问题清单。',
+    ].join('\n'));
+
+    expect(parsed.issues).toEqual([]);
+    expect(parsed).toMatchObject({ p1Count: 0, p2Count: 0, p3Count: 0 });
+  });
+
   it('review 7：审查范围在总体结论标签前停止', () => {
     const parsed = parseReviewMarkdown([
       '# ZHERP 当日 SVN 提交审查日志',
