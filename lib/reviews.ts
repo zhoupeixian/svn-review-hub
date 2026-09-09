@@ -1016,16 +1016,12 @@ export async function getSyncHealth(projectId: number): Promise<SyncHealth> {
     revisionCount: number;
     reviewedCount: number;
     skippedCount: number;
-    p1Count: number;
-    p2Count: number;
-    p3Count: number;
     id: number;
     scopeText: string;
   }>([
     'SELECT updated_at AS updatedAt, log_date AS logDate,',
     'revision_count AS revisionCount, reviewed_count AS reviewedCount,',
-    'skipped_count AS skippedCount, p1_count AS p1Count,',
-    'p2_count AS p2Count, p3_count AS p3Count, scope_text AS scopeText, id',
+    'skipped_count AS skippedCount, scope_text AS scopeText, id',
     'FROM review_logs WHERE project_id = ? AND sync_mode = ? ORDER BY updated_at DESC, id DESC LIMIT 1',
   ].join(' '), [projectId, 'automation']);
   const normalizedLatest = latest ? normalizeReviewCounts(latest) : null;
@@ -1046,6 +1042,12 @@ export async function getSyncHealth(projectId: number): Promise<SyncHealth> {
      WHERE l.project_id = ? AND l.archived_at IS NULL AND i.source_current = 1`,
     [projectId],
   );
+  const latestIssueCount = normalizedLatest
+    ? await first<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM review_issues WHERE review_id = ? AND source_current = 1',
+        [normalizedLatest.id],
+      )
+    : null;
 
   return {
     latestAutomationSyncAt: normalizedLatest?.updatedAt ?? null,
@@ -1058,7 +1060,7 @@ export async function getSyncHealth(projectId: number): Promise<SyncHealth> {
       normalizedLatest && normalizedLatest.revisionCount === 0 && normalizedLatest.reviewedCount === 0 && normalizedLatest.skippedCount === 0,
     ),
     zeroIssueWarning: Boolean(
-      normalizedLatest && normalizedLatest.p1Count + normalizedLatest.p2Count + normalizedLatest.p3Count === 0,
+      normalizedLatest && (latestIssueCount?.count ?? 0) === 0,
     ),
   };
 }

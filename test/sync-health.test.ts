@@ -46,3 +46,82 @@ it('健康指标只认 automation 的最近成功同步，不把管理员上传�
   expect(haihuaHealth.currentIssueCount).toBe(1);
   expect(haihuaHealth.zeroIssueWarning).toBe(false);
 });
+
+it('2026-09-08 完整自动接收后按实际当前问题判断零问题告警', async () => {
+  const review = await ingestReview({
+    markdown: reviewMarkdown20260908(),
+    sourceKey: '2026-09-08/run-20260908-190437/svn审查日志-2026-09-08.md',
+    sourceName: 'svn审查日志-2026-09-08.md',
+    importedBy: 'automation',
+    syncMode: 'automation',
+  });
+
+  expect(review).toMatchObject({
+    logDate: '2026-09-08',
+    revisionCount: 20,
+    reviewedCount: 20,
+    skippedCount: 0,
+    p1Count: 3,
+    p2Count: 3,
+    p3Count: 0,
+    ingestion: {
+      createdIssueCount: 6,
+      updatedIssueCount: 0,
+      parsedIssueCount: 6,
+    },
+  });
+
+  await DB.prepare(
+    'UPDATE review_logs SET p1_count = 0, p2_count = 0, p3_count = 0 WHERE id = ?',
+  ).bind(review.id).run();
+
+  const health = await getSyncHealth(1);
+  expect(health.currentIssueCount).toBe(6);
+  expect(health.zeroIssueWarning).toBe(false);
+});
+
+function reviewMarkdown20260908(): string {
+  const revisions = [
+    54265, 54267, 54270, 54276, 54277, 54279, 54280, 54282, 54284, 54288,
+    54292, 54301, 54302, 54303, 54304, 54305, 54307, 54311, 54315, 54316,
+  ];
+  const revisionRows = revisions.map(
+    (revision) => `| ${revision} | reviewer | 2026-09-08 10:00 | 提交 ${revision} | 已审查 |`,
+  );
+  return [
+    '# ZHERP 当日 SVN 提交审查日志',
+    '',
+    '日期：2026-09-08',
+    '',
+    '审查范围：2026-09-07 19:00:00 至 2026-09-08 18:59:59 内共 20 个 revision。',
+    '',
+    '总体结论：本轮发现 3 项需合并前修复的 P1 财务报表问题，以及 3 项 P2 功能/兼容性问题；当前不建议直接合并或部署。',
+    '',
+    '| Revision | 提交人 | 提交时间 | 提交说明 | 结论 |',
+    '| --- | --- | --- | --- | --- |',
+    ...revisionRows,
+    '',
+    '### P1',
+    '',
+    '#### 1. 按税种销售收入报表未排除无效财务凭证',
+    '- 相关 revision：54301',
+    '',
+    '#### 2. 客户收入成本表的收入/成本分支均未过滤凭证状态',
+    '- 相关 revision：54302',
+    '',
+    '#### 3. 客户收入成本表的 ML 左连接条件没有约束已选中的 ML 明细',
+    '- 相关 revision：54302',
+    '',
+    '### P2',
+    '',
+    '#### 4. 部门客户余额报表的授信类别筛选读取了不存在的控件键',
+    '- 相关 revision：54265、54270',
+    '',
+    '#### 5. MES/电商接口的触发条件、数据源与业务 Scope 已经分叉',
+    '- 相关 revision：54284、54307',
+    '',
+    '#### 6. 销售订单报文批量转换删除了 DocumentNumber 兼容回退',
+    '- 相关 revision：54305',
+    '',
+  ].join('\n');
+}

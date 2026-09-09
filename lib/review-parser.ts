@@ -47,6 +47,7 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
     parseReviewScopeCountsWithEvidence(scopeText),
     revisionTable,
   );
+  const issues = parseIssues(markdown);
 
   return {
     logDate,
@@ -54,12 +55,12 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
     overview,
     scopeText,
     ...scopeCounts,
-    p1Count: countSeverity(markdown, 'P1'),
-    p2Count: countSeverity(markdown, 'P2'),
-    p3Count: countSeverity(markdown, 'P3'),
+    p1Count: issues.filter((issue) => issue.severity === 'P1').length,
+    p2Count: issues.filter((issue) => issue.severity === 'P2').length,
+    p3Count: issues.filter((issue) => issue.severity === 'P3').length,
     revisionTableMode: scopeCounts.revisionTableMode,
     revisions: revisionTable.revisions,
-    issues: parseIssues(markdown),
+    issues,
   };
 }
 
@@ -260,14 +261,6 @@ function publicCounts(
     skippedCount: counts.skippedCount,
     revisionTableMode,
   };
-}
-
-function countSeverity(markdown: string, severity: 'P1' | 'P2' | 'P3'): number {
-  const pattern = new RegExp(
-    '(?:保留\\s*)?(\\d+)\\s*个\\s*' + severity,
-    'i',
-  );
-  return Number(markdown.match(pattern)?.[1] ?? 0);
 }
 
 type ParsedRevisionTable = {

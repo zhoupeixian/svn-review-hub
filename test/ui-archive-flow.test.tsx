@@ -109,6 +109,21 @@ describe('归档库与归档管理 UI', () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/projects/haihua/reviews?');
   });
 
+  it('归档页的复制和导出区域与问题看板保持一致', () => {
+    render(<ArchiveExplorer
+      initialItems={[archivedReview]}
+      initialCursor={null}
+      initialHasMore={false}
+      {...zherpArchiveProps}
+    />);
+
+    const heading = screen.getByText('分享当前筛选');
+    expect(heading.closest('.share-actions')).toBeTruthy();
+    expect(screen.getByText('复制链接后可发送给团队成员，导出将沿用同一筛选范围。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '复制当前筛选链接' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: '导出归档清单' })).toBeTruthy();
+  });
+
   it('项目上传只提交到当前项目 API', async () => {
     const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ review: { logDate: '2026-09-01' } }), {
