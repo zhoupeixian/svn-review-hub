@@ -18,6 +18,7 @@ import { POST as uploadProjectReview } from '@/app/api/projects/[slug]/reviews/r
 import { GET as listProjectReviews } from '@/app/api/projects/[slug]/reviews/route';
 import { POST as archiveProjectReviews } from '@/app/api/projects/[slug]/reviews/archive/route';
 import { POST as restoreProjectReviews } from '@/app/api/projects/[slug]/reviews/restore/route';
+import { POST as archiveLegacyReviews } from '@/app/api/reviews/archive/route';
 import { GET as exportProjectReviews } from '@/app/api/projects/[slug]/reviews/export/route';
 import { GET as exportProjectIssues } from '@/app/api/projects/[slug]/issues/export/route';
 import { GET as downloadProjectReview } from '@/app/api/projects/[slug]/reviews/[id]/raw/route';
@@ -97,6 +98,11 @@ describe.sequential('按审查项目管理日志', () => {
     const zherpId = await reviewId('zherp');
     const haihuaId = await reviewId('haihua');
 
+    const legacyCrossPreview = await archiveLegacyReviews(
+      jsonRequest({ mode: 'preview', ids: [haihuaId] }),
+    );
+    expect(legacyCrossPreview.status).toBe(404);
+
     const crossPreview = await archiveProjectReviews(
       jsonRequest({ mode: 'preview', ids: [haihuaId] }),
       { params: Promise.resolve({ slug: 'zherp' }) },
@@ -109,6 +115,11 @@ describe.sequential('按审查项目管理日志', () => {
     );
     expect(preview.status).toBe(200);
     const { previewToken } = await preview.json() as { previewToken: string };
+
+    const legacyCrossConfirm = await archiveLegacyReviews(
+      jsonRequest({ mode: 'confirm', previewToken }),
+    );
+    expect(legacyCrossConfirm.status).toBe(404);
 
     const crossConfirm = await archiveProjectReviews(
       jsonRequest({ mode: 'confirm', previewToken }),

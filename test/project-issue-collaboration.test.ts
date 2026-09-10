@@ -2,6 +2,7 @@
 
 import { env } from 'cloudflare:workers';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PATCH as patchLegacyIssue } from '@/app/api/issues/[id]/status/route';
 import { PATCH as patchProjectIssue } from '@/app/api/projects/[slug]/issues/[id]/status/route';
 import { hashAnonymousSource } from '@/lib/anonymous-rate-limit';
 import { ensureReviewSchema, ingestReview, ingestReviewForProject } from '@/lib/reviews';
@@ -46,6 +47,24 @@ describe.sequential('按项目隔离匿名问题协作', () => {
           id: String(haihuaIssue.id),
         }),
       },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await DB.prepare(
+      'SELECT COUNT(*) AS count FROM review_issue_events',
+    ).first()).toEqual({ count: 0 });
+    expect(await issueForProject('haihua')).toMatchObject({
+      status: 'open',
+      version: 0,
+    });
+  });
+
+  it('旧 ZHERP 地址拒绝其他项目的问题 ID', async () => {
+    const haihuaIssue = await issueForProject('haihua');
+
+    const response = await patchLegacyIssue(
+      updateRequest('192.0.2.15'),
+      { params: Promise.resolve({ id: String(haihuaIssue.id) }) },
     );
 
     expect(response.status).toBe(404);
