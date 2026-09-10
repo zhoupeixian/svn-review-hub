@@ -53,6 +53,10 @@ describe.sequential('按项目同步日志', () => {
   });
 
   it('只迁移一次旧全站密钥，D1 不保存明文且移除旧环境变量后仍可鉴权', async () => {
+    await expect(authorizeProjectSync('zherp', ZHERP_KEY)).resolves.toMatchObject({
+      id: 1,
+      slug: 'zherp',
+    });
     const stored = await DB.prepare(
       'SELECT sync_key_encrypted AS encrypted FROM review_projects WHERE id = 1',
     ).first<{ encrypted: string | null }>();

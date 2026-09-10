@@ -683,7 +683,6 @@ export async function ensureReviewSchema(): Promise<void> {
       integrityStatements.map((statement) => DB.prepare(statement)),
     );
     await ensureReviewSearch(DB);
-    await ensureLegacySyncKeyMigrated(DB);
     await DB.prepare('PRAGMA optimize').run();
   })();
 
