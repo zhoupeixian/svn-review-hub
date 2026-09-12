@@ -13,6 +13,7 @@
 
 # next.js
 /.next/
+/.next-server/
 /.vinext/
 /out/
 
@@ -40,3 +41,5 @@ next-env.d.ts
 /work/
 /.worktrees/
 /tsconfig.tsbuildinfo
+/data/
+/backups/

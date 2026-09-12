@@ -43,9 +43,13 @@ jobs:
         run: npm run test:unit -- --reporter=default --reporter=junit --outputFile.junit=outputs/test/unit.xml
       - name: Workers tests
         run: npm run test:workers -- --reporter=default --reporter=junit --outputFile.junit=outputs/test/workers.xml
+      - name: SQLite repository tests
+        run: npm run test:server -- --reporter=default --reporter=junit --outputFile.junit=outputs/test/server.xml
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      - run: npm run build:server
+      - run: npm run verify:server
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -55,14 +59,30 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  container:
+    name: Docker deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: docker build -t portal:ci .
+      - run: node scripts/verify-server.mjs portal:ci
+
   ci-passed:
     name: CI passed
     if: always()
-    needs: verify
+    needs: [verify, container]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require all verification jobs to pass
         env:
           VERIFY_RESULT: ${{ needs.verify.result }}
-        run: test "$VERIFY_RESULT" = success
+          CONTAINER_RESULT: ${{ needs.container.result }}
+        run: test "$VERIFY_RESULT" = success && test "$CONTAINER_RESULT" = success

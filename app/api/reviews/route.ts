@@ -8,7 +8,6 @@ import { parseReviewFilters } from '@/lib/review-filters';
 import { handleEnabledReviewProject } from '@/lib/project-api';
 import { uploadReviewForProject } from '@/lib/project-review-upload';
 
-export { parseReviewFilters } from '@/lib/review-filters';
 
 type SyncPayload = {
   projectSlug?: unknown;

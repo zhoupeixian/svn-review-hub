@@ -1,0 +1,23 @@
+services:
+  portal:
+    image: ${PORTAL_IMAGE:-zherp-svn-review-portal:local}
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file: .env.server
+    ports:
+      - '${PORTAL_BIND_HOST:-127.0.0.1}:${PORTAL_PORT:-3000}:3000'
+    volumes:
+      - portal-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+volumes:
+  portal-data:
+    name: ${PORTAL_VOLUME:-zherp-portal-data}
