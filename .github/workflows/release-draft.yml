@@ -1,0 +1,56 @@
+name: Release draft
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-draft
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Create draft for the validated commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+          lock_version=$(node -p "JSON.parse(require('fs').readFileSync('package-lock.json', 'utf8')).version")
+          test "$version" = "$lock_version"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo 'package.json version is not a supported release version.' >&2
+            exit 1
+          fi
+          tag="v$version"
+          notes="docs/release/$tag.md"
+          test -s "$notes"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; review it manually instead of overwriting it." >&2
+            exit 1
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; verify its target manually before releasing." >&2
+            exit 1
+          fi
+          gh release create "$tag" --target "$RELEASE_COMMIT" --draft --title "$tag" --notes-file "$notes"

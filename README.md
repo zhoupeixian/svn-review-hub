@@ -1,5 +1,7 @@
 # ZHERP SVN 审查门户
 
+[![CI](https://github.com/zhoupeixian/zherp-svn-review-portal/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoupeixian/zherp-svn-review-portal/actions/workflows/ci.yml)
+
 将 SVN 代码审查 Markdown 日志整理为可检索、可跟踪、可分享的多项目门户。适合开发者查看每日审查结果、跟进问题，也方便管理员统一导入和归档日志。
 
 本项目负责展示和管理审查结果；SVN 更新、构建及代码审查由外部自动化完成，门户接收其输出。
@@ -86,7 +88,8 @@ npm run sync:reviews -- --date 2026-09-12
 ## 构建与检查
 
 ```powershell
-npx tsc --noEmit
+npm run test:ci
+npm run typecheck
 npm run lint
 npm run build
 ```
@@ -107,6 +110,7 @@ npm run smoke:production
 React 19、Next.js App Router 约定、vinext/Vite、TypeScript、Tailwind CSS 4；运行于 Cloudflare Workers，D1 保存结构化数据，R2 保存 Markdown 原文，Drizzle 管理 schema 和迁移文件。
 
 - [开发代理与开发者指南](AGENTS.md)：源码地图、业务约束、测试分流、修改边界。
+- [版本发布流程](docs/release/README.md)：CI、测试报告、Release 草稿与部署边界。
 - [历史设计与计划](docs/superpowers/)：理解早期设计，不作为当前功能清单。
 - [1.0 历史验证记录](docs/release/review-portal-1-0-validation.md)：仅代表记录日期的版本，导出格式和测试数量等以当前代码为准。
 

@@ -11,6 +11,10 @@
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "vitest",
+    "test:unit": "vitest run",
+    "test:workers": "vitest run --mode workers",
+    "test:ci": "npm run test:unit && npm run test:workers",
+    "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "smoke:production": "node scripts/smoke-production.mjs",
     "sync:reviews": "node scripts/sync-local-reviews.mjs"

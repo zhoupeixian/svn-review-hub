@@ -59,24 +59,19 @@
 
 ## 测试与验证
 
-在仓库根目录执行以下 PowerShell 命令；需已安装 `rg`（ripgrep）。按当前测试文件的运行时导入进行分流，旧管理路由测试单独放入有 `@` 别名的 Workers 环境。
+在仓库根目录执行以下命令。`vitest.config.ts` 的 `workerTests` 列表显式划分 Workers 测试，其余 `test/` 下的测试在 Node/jsdom 中运行；两个环境均配置 `@` 别名。所有 `.tsx` UI 测试通过文件头声明 jsdom 环境。
 
 ```powershell
 npm ci
 
-$workerTests = @(rg -l 'cloudflare:test|cloudflare:workers' test -g '*.test.ts')
-npx vitest run --mode workers --exclude '**/.worktrees/**' @workerTests test/legacy-admin-route.test.ts
-
-$nodeTests = @(rg --files-without-match 'cloudflare:test|cloudflare:workers' test -g '*.test.ts' -g '*.test.tsx' | Where-Object { $_ -notmatch 'legacy-admin-route' })
-npx vitest run @nodeTests
-
-npx tsc --noEmit
+npm run test:ci
+npm run typecheck
 npm run lint
 npm run build
 git diff --check
 ```
 
-逐项检查退出码；PowerShell 不会因上一个原生命令失败而自动停止。新增测试时重新核对分流列表，间接依赖 Workers 的测试未必含上述导入字符串，不能只靠脚本推断环境。
+逐项检查退出码；PowerShell 不会因上一个原生命令失败而自动停止。新增 Workers 测试时须加入配置中的列表，避免被默认 Node 环境加载；新增 Node 测试会由 `test/` 的匹配规则自动发现。`npm run test:unit` 与 `npm run test:workers` 可分别运行；`npm run test:ci` 串行执行两组并传播失败。
 
 | 修改范围 | 优先测试 |
 | --- | --- |
@@ -86,27 +81,28 @@ git diff --check
 | 状态、跨项目隔离 | `issue-lifecycle`（Node）；`issue-status-api`、`project-issue-collaboration`（Workers） |
 | 项目管理、归档、删除 | `ui-project-admin`（jsdom）；`project-admin-api`、`project-log-admin`、`project-deletion`、`archive-api`（Workers） |
 | 同步、密钥、冷启动 | `project-sync`、`project-sync-schema-init`（Workers）；`sync-local-reviews-command`（Node） |
-| 浏览、导出、旧路由、冒烟 | `project-browsing-api`、`issues-export`、`legacy-admin-route`（Workers）；`smoke-production-command`（Node） |
+| 浏览、导出、旧路由、冒烟 | `project-browsing-api`、`issues-export`（Workers）；`legacy-admin-route`、`smoke-production-command`（Node） |
 
 表中名称对应 `test/<名称>.test.ts`，UI 文件为 `.test.tsx`。例如：
 
 ```powershell
-npx vitest run test/review-parser-corpus.test.ts test/ui-current-review-flow.test.tsx
-npx vitest run --mode workers --exclude '**/.worktrees/**' test/sync-health.test.ts
+npm run test:unit -- test/review-parser-corpus.test.ts test/ui-current-review-flow.test.tsx
+npm run test:workers -- test/sync-health.test.ts
 ```
 
 常见验证陷阱：
 
 - `cloudflare:workers` 无法加载：先检查是否漏用 `--mode workers`，不要改业务实现来适应错误环境。
-- Workers 默认发现范围可能混入 `.worktrees` 的旧测试；文件过滤是匹配路径，不保证排除同名旧文件，保留显式 `--exclude`。
-- 默认 Node 配置没有 `@` 别名，`legacy-admin-route.test.ts` 会加载失败；当前使用 Workers 模式验证。不要把这一既有配置限制报告为新功能回归。
-- 不要用一次默认 `npm test -- --run` 代替上述分流全量检查，也不要把 jsdom 测试全部放进 Workers。
+- 两个环境的发现范围均限定根目录 `test/`，避免混入 `.worktrees` 旧测试。修改配置时保留此边界，不要退回扫描整个仓库。
+- 默认 `npm test -- --run` 只覆盖 Node/jsdom，不能代替 `npm run test:ci` 的两组全量检查，也不要把 jsdom 测试放进 Workers。
 - 依赖漏洞以当前审计结果为准，不要未经任务授权执行 `npm audit fix --force`。
 
 生产构建、jsdom 测试不证明浏览器布局、生产数据修复或线上认证正常。涉及窄屏、键盘交互等改动，应补真实浏览器验收；涉及线上冒烟，使用 README 的命令并报告实际目标和结果。未经执行不要声称部署或线上验证完成。
 
 ## 交付和文档维护
 
+- GitHub CI 在 Linux Node.js 22 / 24 和 Windows Node.js 24 执行同一套验证；`CI passed` 是汇总检查。GitHub Actions 固定到完整提交 SHA，更新时核对官方来源。
+- 发布操作见 [版本发布流程](docs/release/README.md)。Release draft 仅由维护者手动触发，通过完整 CI 后创建草稿；不自动公开发布、部署或发布 npm / 容器包。已有同名 Release 或标签不得覆盖。
 - 只修改任务需要的内容，不顺手重构相邻模块、不擅自升级依赖、不编辑生成产物或其他工作树。
 - 报告具体行为变化、测试命令/结果、未验证边界及已有故障；不要沿用旧 PR 的测试数量作为当前结果。
 - 产品能力、页面入口、配置、操作命令变更时更新 `README.md`；源码职责、业务约束、测试方法变更时更新本文。避免把同一操作说明维护在两处。

@@ -2,25 +2,42 @@ import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+const workerTests = [
+  'archive-api',
+  'issue-status-api',
+  'issues-export',
+  'project-admin-api',
+  'project-browsing-api',
+  'project-deletion',
+  'project-issue-collaboration',
+  'project-log-admin',
+  'project-sync-schema-init',
+  'project-sync',
+  'review-ingestion',
+  'review-repository-query',
+  'review-schema-contract',
+  'sync-health',
+].map((name) => `test/${name}.test.ts`);
+
+const resolve = {
+  alias: { '@': fileURLToPath(new URL('.', import.meta.url)) },
+};
+
 export default defineConfig(async ({ mode }) => {
   if (mode !== 'workers') {
     return {
+      resolve,
       test: {
         environment: 'node',
-        environmentMatchGlobs: [['test/**/*.tsx', 'jsdom']],
         include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
-        exclude: ['test/review-schema-contract.test.ts'],
+        exclude: workerTests,
       },
     };
   }
 
   const migrations = await readD1Migrations('./drizzle');
   return {
-    resolve: {
-      alias: {
-        '@': fileURLToPath(new URL('.', import.meta.url)),
-      },
-    },
+    resolve,
     plugins: [
       cloudflareTest({
         miniflare: {
@@ -34,6 +51,7 @@ export default defineConfig(async ({ mode }) => {
       }),
     ],
     test: {
+      include: workerTests,
       setupFiles: ['./test/apply-migrations.ts'],
     },
   };
