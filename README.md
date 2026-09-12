@@ -15,9 +15,11 @@
   <img src="docs/assets/zherp-system-architecture.svg" alt="ZHERP SVN Review Portal 系统架构" width="100%" />
 </p>
 
+上图展示 Sites / Cloudflare 托管模式。独立服务器与 Docker 复用相同业务流程，运行时改为 Next.js + SQLite，管理员身份改为本地签名会话，详见 [部署指南](docs/deployment.md)。
+
 ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端或代码审查执行器。SVN 更新、构建和代码审查在本仓库外完成，生成 Markdown 审查日志后再进入门户。
 
-### 架构与数据流
+### 托管模式的数据流
 
 ```text
 ┌──────────────────── 本仓库外 ────────────────────┐
@@ -58,7 +60,7 @@ ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端
 
 自动同步脚本只读取外部自动化已经生成的 Markdown，并通过 `POST /api/reviews` 和项目级同步密钥上传；它不会主动访问 SVN。服务端解析日志后，将项目、日志元数据、Revision、Issue、状态事件和搜索索引写入 D1，原始 Markdown 单独保存到 R2。
 
-浏览器用户可进行日志检索、问题协作和归档浏览；管理员身份由 OpenAI Sites 托管环境提供的可信身份头识别。GitHub Actions 仅执行 Node/jsdom 测试、Workers 测试、类型检查、lint 和构建验证，不负责生产部署。
+浏览器用户可进行日志检索、问题协作和归档浏览；管理员身份由 OpenAI Sites 托管环境提供的可信身份头识别。GitHub Actions 验证 Node/jsdom、Workers、SQLite、两种生产构建和容器部署链路；发布工作流提供容器分发，不自动部署服务器。
 
 ## 能做什么
 
