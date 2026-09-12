@@ -24,6 +24,21 @@ const resolve = {
 };
 
 export default defineConfig(async ({ mode }) => {
+  if (mode === 'node-server') {
+    return {
+      resolve: { alias: {
+        '@/lib/runtime': fileURLToPath(new URL('./lib/runtime-node.ts', import.meta.url)),
+        'cloudflare:workers': fileURLToPath(new URL('./lib/runtime-node.ts', import.meta.url)),
+        'cloudflare:test': fileURLToPath(new URL('./test/node-migrations.ts', import.meta.url)),
+        ...resolve.alias,
+      } },
+      test: {
+        environment: 'node',
+        include: workerTests,
+        setupFiles: ['./test/node-runtime-setup.ts', './test/apply-migrations.ts'],
+      },
+    };
+  }
   if (mode !== 'workers') {
     return {
       resolve,
