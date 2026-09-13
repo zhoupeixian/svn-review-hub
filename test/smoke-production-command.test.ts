@@ -102,7 +102,7 @@ describe('生产环境冒烟检查命令', () => {
     const result = await runCommand(baseUrl);
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain('[FAIL] ZHERP 日志只读 API');
+    expect(result.stderr).toContain('[FAIL] 默认项目日志只读 API');
     expect(result.stderr).toContain('实际状态 500');
     expect(result.stderr).not.toContain('database-secret-detail');
   });

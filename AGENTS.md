@@ -32,6 +32,7 @@
 | `app/api/reviews/route.ts` | 旧 ZHERP 查询兼容入口及带 `projectSlug` 的自动同步入口 |
 | `app/api/admin/` | 全站项目管理和审计 API |
 | `lib/review-parser.ts` | Markdown 解析、Revision 范围证据、问题和严重级计数 |
+| `lib/review-path-sanitizer.js`、`lib/project-paths.ts` | 同步上传前的本地路径脱敏、站点路径安全校验及旧项目历史日志展示兼容 |
 | `lib/reviews.ts` | 运行时 schema 升级、项目同步密钥、导入合并、查询、同步健康、管理员登记 |
 | `lib/review-query.ts`、`lib/review-filters.ts` | 查询参数及筛选语义 |
 | `lib/issue-lifecycle.ts`、`lib/issue-status-update.ts`、`lib/anonymous-rate-limit.ts` | 状态、版本冲突、匿名来源摘要及限流 |
@@ -48,6 +49,7 @@
 ## 数据流和必须保留的行为
 
 - 自动化先生成 Markdown，同步脚本上传；服务端鉴权、解析和接收校验后，R2 保存原文，D1 保存日志、Revision、问题及事件。不要用内存聚合替换已有数据库筛选和分页。
+- 本地原始日志可以保留绝对文件路径，但进入 Portal 的 Markdown 不得包含本机绝对路径。自动同步必须通过 `REVIEW_PROJECT_ROOT` 在上传前仅在内存中转换为相对路径且不修改本地文件；浏览器手工上传必须预先使用相对路径。旧 `zherp` 已存日志的路径转换仅是历史兼容，不得扩展为新项目的固定根目录约定。
 - 项目是数据边界。查询、详情、状态更新、归档预览/确认、导出和原文读取都要验证归属；旧无项目路径只对应 `zherp`，不能凭 ID 访问其他项目。保留跨项目 404 和无副作用的回归约束。
 - 日志按项目与 `sourceKey` 合并；问题稳定键用于保留状态、说明、版本与事件。源文删除的问题保留历史并设为非当前，重新出现时恢复为当前；不要整批删除重建问题。
 - 严重级计数来自解析出的 `issues`，不能从“3 项 P1”之类摘要推测。零问题告警检查最新自动同步日志实际持久化且 `source_current = 1` 的问题；手工上传不能冒充自动同步时间。

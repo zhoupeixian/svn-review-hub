@@ -1,15 +1,19 @@
 import { readdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { sanitizeReviewMarkdown } from '../lib/review-path-sanitizer.js';
 
+const args = process.argv.slice(2);
 const configPath =
+  readStringArgument(args, '--config') ||
   process.env.REVIEW_PORTAL_CONFIG ||
   path.join(os.homedir(), '.codex', 'automations', 'zherp', 'review-portal.env');
 
 await loadConfig();
 
-const requestedDate = readDateArgument(process.argv.slice(2));
+const requestedDate = readDateArgument(args);
 const projectSlug = process.env.REVIEW_PORTAL_PROJECT_SLUG;
+const projectRoot = process.env.REVIEW_PROJECT_ROOT;
 const logRoot = process.env.REVIEW_LOG_ROOT;
 const portalUrl = process.env.REVIEW_PORTAL_URL;
 const syncKey = process.env.REVIEW_PORTAL_SYNC_KEY;
@@ -17,6 +21,7 @@ const dispatchToken = process.env.REVIEW_PORTAL_DISPATCH_TOKEN;
 
 const missingConfig = [
   ['REVIEW_PORTAL_PROJECT_SLUG', projectSlug],
+  ['REVIEW_PROJECT_ROOT', projectRoot],
   ['REVIEW_PORTAL_URL', portalUrl],
   ['REVIEW_PORTAL_SYNC_KEY', syncKey],
   ['REVIEW_LOG_ROOT', logRoot],
@@ -37,6 +42,7 @@ if (missingConfig.length) {
       try {
         const ingestion = await uploadReview(
           file,
+          projectRoot,
           logRoot,
           projectSlug,
           portalUrl,
@@ -76,12 +82,18 @@ async function loadConfig() {
   }
 }
 
+function readStringArgument(args, name) {
+  const index = args.findIndex((value) => value === name);
+  const inline = args.find((argument) => argument.startsWith(name + '='));
+  const value = index >= 0 ? args[index + 1] : inline?.slice(name.length + 1);
+  if (index >= 0 && (!value || value.startsWith('--'))) {
+    throw new Error(name + ' 必须提供值。');
+  }
+  return value || null;
+}
+
 function readDateArgument(args) {
-  const dateIndex = args.findIndex((value) => value === '--date');
-  const value =
-    dateIndex >= 0
-      ? args[dateIndex + 1]
-      : args.find((argument) => argument.startsWith('--date='))?.slice(7);
+  const value = readStringArgument(args, '--date');
   if (!value) return null;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw new Error('日期参数必须是 YYYY-MM-DD。');
@@ -115,13 +127,15 @@ async function findReviewLogs(root, date) {
 
 async function uploadReview(
   file,
+  projectRoot,
   root,
   projectSlug,
   baseUrl,
   syncKey,
   serviceToken,
 ) {
-  const markdown = await readFile(file, 'utf8');
+  const localMarkdown = await readFile(file, 'utf8');
+  const markdown = sanitizeReviewMarkdown(localMarkdown, projectRoot);
   const sourceKey = path.relative(root, file).split(path.sep).join('/');
   const headers = {
     'content-type': 'application/json',

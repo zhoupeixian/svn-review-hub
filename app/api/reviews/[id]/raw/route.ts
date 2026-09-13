@@ -1,3 +1,4 @@
+import { sanitizeStoredReviewMarkdown } from '@/lib/project-paths';
 import { getEnabledReviewProject, getReviewMarkdown } from '@/lib/reviews';
 
 type Props = {
@@ -12,7 +13,7 @@ export async function GET(_: Request, { params }: Props) {
     return new Response('未找到审查日志。', { status: 404 });
   }
 
-  return new Response(review.content, {
+  return new Response(sanitizeStoredReviewMarkdown(review.content, 'zherp'), {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',
       'content-disposition':

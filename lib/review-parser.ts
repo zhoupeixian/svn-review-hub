@@ -34,7 +34,7 @@ export function parseReviewMarkdown(markdown: string): ParsedReview {
   const lines = markdown.replace(/\r\n/g, '\n').split('\n');
   const title =
     lines.find((line) => line.startsWith('# '))?.replace(/^#\s+/, '').trim() ??
-    'ZHERP SVN 提交审查日志';
+    'SVN 提交审查日志';
   const logDate =
     lineValue(lines, '日期：').match(/\d{4}-\d{2}-\d{2}/)?.[0] ??
     '';
