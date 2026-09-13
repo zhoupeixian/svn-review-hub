@@ -1,4 +1,7 @@
-import { reviewFilePathFromUrl } from './review-path-sanitizer.js';
+import {
+  relativizeReviewMarkdown,
+  reviewFilePathFromUrl,
+} from './review-path-sanitizer.js';
 
 const LEGACY_ZHERP_ROOT = /(?:file:\/{2,3})?D:[\\/]SVN[\\/]ZHERP[\\/]/i;
 const LEGACY_ZHERP_PATH = /(?:file:\/{2,3})?D:[\\/]SVN[\\/]ZHERP[\\/]([^\s)\]}>]+)/gi;
@@ -22,5 +25,7 @@ export function relativizeProjectPaths(value: string): string {
 }
 
 export function sanitizeStoredReviewMarkdown(value: string, projectSlug: string): string {
-  return projectSlug === 'zherp' ? relativizeProjectPaths(value) : value;
+  if (projectSlug !== 'zherp') return value;
+  const legacyRoot = ['D:', 'SVN', 'ZHERP'].join('\\\\');
+  return relativizeReviewMarkdown(value, legacyRoot);
 }
