@@ -25,14 +25,14 @@ afterEach(async () => {
 });
 
 describe('本地按项目同步命令', () => {
-  it('从单项目配置读取项目、密钥和日志根目录并发送可观察请求', async () => {
-    const received: Array<{ headers: IncomingMessage['headers']; body: unknown }> = [];
+  it('支持任意配置文件位置并在上传前脱敏项目绝对路径', async () => {
+    const received: Array<{ headers: IncomingMessage['headers']; body: Record<string, unknown> }> = [];
     const portalUrl = await listen(async (request, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       received.push({
         headers: request.headers,
-        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>,
       });
       response.writeHead(201, { 'content-type': 'application/json' });
       response.end(JSON.stringify({
@@ -50,7 +50,7 @@ describe('本地按项目同步命令', () => {
       'REVIEW_PORTAL_SYNC_KEY=haihua-secret',
     ]);
 
-    const result = await runCommand(fixture.configPath);
+    const result = await runCommand(fixture.configPath, { useCliConfig: true });
 
     expect(result).toMatchObject({ code: 0 });
     expect(result.stdout).toContain('已同步：svn审查日志-2026-08-31.md');
@@ -61,22 +61,27 @@ describe('本地按项目同步命令', () => {
       sourceKey: '2026-08-31/svn审查日志-2026-08-31.md',
       sourceName: 'svn审查日志-2026-08-31.md',
     });
+    const markdown = String(received[0].body.markdown);
+    expect(markdown).not.toContain(fixture.projectRoot);
+    expect(markdown).toContain('src');
+    expect(markdown).toContain('review-file:');
   });
 
-  it('缺少任一必填单项目配置时退出 2 且不发送 HTTP', async () => {
+  it('缺少项目根目录配置时退出 2 且不发送 HTTP', async () => {
     let requestCount = 0;
     const portalUrl = await listen((_request, response) => {
       requestCount += 1;
       response.writeHead(201).end();
     });
     const fixture = await createFixture(portalUrl, [
+      'REVIEW_PORTAL_PROJECT_SLUG=haihua',
       'REVIEW_PORTAL_SYNC_KEY=haihua-secret',
-    ]);
+    ], false);
 
     const result = await runCommand(fixture.configPath);
 
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain('REVIEW_PORTAL_PROJECT_SLUG');
+    expect(result.stderr).toContain('REVIEW_PROJECT_ROOT');
     expect(requestCount).toBe(0);
   });
 
@@ -99,27 +104,42 @@ describe('本地按项目同步命令', () => {
   });
 });
 
-async function createFixture(portalUrl: string, extraConfig: string[]) {
+async function createFixture(
+  portalUrl: string,
+  extraConfig: string[],
+  includeProjectRoot = true,
+) {
   const root = await mkdtemp(path.join(tmpdir(), 'review-sync-command-'));
+  const projectRoot = path.join(root, 'working copy');
   const logRoot = path.join(root, 'logs');
   const datedRoot = path.join(logRoot, '2026-08-31');
+  await mkdir(path.join(projectRoot, 'src'), { recursive: true });
   await mkdir(datedRoot, { recursive: true });
+  const sourcePath = path.join(projectRoot, 'src', 'Order Service.java') + ':42';
+  const sourceLink = sourcePath.split(path.sep).join('/');
   await writeFile(
     path.join(datedRoot, 'svn审查日志-2026-08-31.md'),
-    '# 日志\n日期：2026-08-31\n审查范围：共 0 个 revision\n',
+    [
+      '# 日志',
+      '日期：2026-08-31',
+      '审查范围：共 0 个 revision',
+      `相关文件：${sourcePath}`,
+      `[源码](<${sourceLink}>)`,
+    ].join('\n'),
     'utf8',
   );
-  const configPath = path.join(root, 'review-portal.env');
+  const configPath = path.join(root, 'custom review.env');
   await writeFile(
     configPath,
     [
       `REVIEW_PORTAL_URL=${portalUrl}`,
       `REVIEW_LOG_ROOT=${logRoot}`,
+      ...(includeProjectRoot ? [`REVIEW_PROJECT_ROOT=${projectRoot}`] : []),
       ...extraConfig,
     ].join('\n'),
     'utf8',
   );
-  return { configPath };
+  return { configPath, projectRoot };
 }
 
 async function listen(
@@ -136,17 +156,23 @@ async function listen(
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function runCommand(configPath: string): Promise<{
+async function runCommand(
+  configPath: string,
+  options: { useCliConfig?: boolean } = {},
+): Promise<{
   code: number | null;
   stdout: string;
   stderr: string;
 }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath, '--date', '2026-08-31'], {
+    const args = [scriptPath, '--date', '2026-08-31'];
+    if (options.useCliConfig) args.push('--config', configPath);
+    const child = spawn(process.execPath, args, {
       env: {
         ...process.env,
-        REVIEW_PORTAL_CONFIG: configPath,
+        REVIEW_PORTAL_CONFIG: options.useCliConfig ? '' : configPath,
         REVIEW_PORTAL_PROJECT_SLUG: '',
+        REVIEW_PROJECT_ROOT: '',
         REVIEW_PORTAL_URL: '',
         REVIEW_PORTAL_SYNC_KEY: '',
         REVIEW_PORTAL_DISPATCH_TOKEN: '',
