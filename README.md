@@ -1,6 +1,6 @@
 # SVN Review Hub
 
-[![CI](https://github.com/zhoupeixian/zherp-svn-review-portal/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoupeixian/zherp-svn-review-portal/actions/workflows/ci.yml)
+[![CI](https://github.com/zhoupeixian/svn-review-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoupeixian/svn-review-hub/actions/workflows/ci.yml)
 
 将 SVN 代码审查 Markdown 日志整理为可检索、可跟踪、可分享的多项目门户。适合开发者查看每日审查结果、跟进问题，也方便管理员统一导入和归档日志。
 
@@ -92,8 +92,8 @@ SVN Review Hub 的职责边界是“接收并管理审查结果”，不是 SVN 
 开发与原生部署支持 Node.js **22.13.0+ 的 22 LTS / 24 LTS**、npm 和 Git，推荐 Node.js 24。下面是 Cloudflare 开发环境；希望直接使用项目请按 [独立部署指南](docs/deployment.md) 操作。以下示例使用 PowerShell；已克隆仓库的开发者直接进入现有目录，不要重复克隆。
 
 ```powershell
-git clone https://github.com/zhoupeixian/zherp-svn-review-portal.git
-Set-Location zherp-svn-review-portal
+git clone https://github.com/zhoupeixian/svn-review-hub.git
+Set-Location svn-review-hub
 npm ci
 if (-not (Test-Path .dev.vars)) { Copy-Item .dev.vars.example .dev.vars }
 ```
@@ -176,7 +176,7 @@ React 19、Next.js App Router、TypeScript、Tailwind CSS 4。Cloudflare 模式�
 
 ## 反馈与贡献
 
-项目由 [zhoupeixian](https://github.com/zhoupeixian) 及仓库贡献者维护。使用问题、缺陷和功能建议请通过 [GitHub Issues](https://github.com/zhoupeixian/zherp-svn-review-portal/issues) 提交，先检索是否已有相同问题。
+项目由 [zhoupeixian](https://github.com/zhoupeixian) 及仓库贡献者维护。使用问题、缺陷和功能建议请通过 [GitHub Issues](https://github.com/zhoupeixian/svn-review-hub/issues) 提交，先检索是否已有相同问题。
 
 - 缺陷报告请包含版本或提交号、运行环境、复现步骤、预期与实际结果，以及脱敏后的日志或截图。不要公开同步密钥、访问令牌或业务敏感原文。
 - 开发前阅读 [AGENTS.md](AGENTS.md)，较大的功能或行为调整先在 Issue 中说明范围；提交 PR 时保持修改集中，并列明验证命令、结果及未验证部分。
