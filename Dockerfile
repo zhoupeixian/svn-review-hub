@@ -7,7 +7,7 @@ COPY . .
 RUN npm run build:server
 
 FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime
-LABEL org.opencontainers.image.source="https://github.com/zhoupeixian/zherp-svn-review-portal" \
+LABEL org.opencontainers.image.source="https://github.com/zhoupeixian/svn-review-hub" \
       org.opencontainers.image.licenses="MIT"
 WORKDIR /app
 ENV NODE_ENV=production \
