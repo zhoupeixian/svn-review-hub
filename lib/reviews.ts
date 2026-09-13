@@ -14,6 +14,7 @@ import {
   type IssueStatus,
   normalizeIssueKey,
 } from '@/lib/issue-lifecycle';
+import { findAbsoluteLocalPath } from '@/lib/review-path-sanitizer.js';
 import * as XLSX from 'xlsx-js-style';
 import {
   decodePageCursor,
@@ -1687,7 +1688,7 @@ export async function ingestReview(
     'SELECT id, slug FROM review_projects WHERE slug = ?',
     [DEFAULT_REVIEW_PROJECT_SLUG],
   );
-  if (!defaultProject) throw new Error('默认 ZHERP 审查项目不存在。');
+  if (!defaultProject) throw new Error('默认审查项目（zherp）不存在。');
   return ingestReviewForProject(defaultProject, input);
 }
 
@@ -1708,6 +1709,12 @@ export async function ingestReviewForProject(
   if (!markdown.trim()) throw new Error('日志文件为空。');
   if (new TextEncoder().encode(markdown).byteLength > 2_000_000) {
     throw new Error('日志文件超过 2MB 限制。');
+  }
+  const absoluteLocalPath = findAbsoluteLocalPath(markdown);
+  if (absoluteLocalPath) {
+    throw new Error(
+      '日志仍包含绝对本地路径，请在上传前根据项目根目录转换为相对路径。',
+    );
   }
 
   const parsed = parseReviewMarkdown(markdown);
