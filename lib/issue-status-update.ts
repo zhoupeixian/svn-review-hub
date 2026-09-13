@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { env } from '@/lib/runtime';
 import { consumeAnonymousUpdate } from '@/lib/anonymous-rate-limit';
 import { parseIssueUpdateInput } from '@/lib/issue-lifecycle';
 import { ensureReviewSchema } from '@/lib/reviews';

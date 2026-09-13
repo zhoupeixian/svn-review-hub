@@ -1,4 +1,4 @@
-import { restoreReviewsForProject } from '@/app/api/reviews/restore/route';
+import { restoreReviewsForProject } from '@/lib/project-review-restore';
 import { handleAccessibleReviewProject } from '@/lib/project-api';
 
 type Context = {

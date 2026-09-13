@@ -1,0 +1,69 @@
+name: Publish container
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-container-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Build and verify the image to publish
+        run: |
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t portal:verified .
+          node scripts/verify-server.mjs portal:verified
+      - name: Publish immutable commit image and optional release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          tag="sha-$GITHUB_SHA"
+          if docker manifest inspect "$image:$tag" >/dev/null 2>&1; then
+            docker pull "$image:$tag"
+            revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$tag")
+            test "$revision" = "$GITHUB_SHA"
+            node scripts/verify-server.mjs "$image:$tag"
+          else
+            docker tag portal:verified "$image:$tag"
+            docker push "$image:$tag"
+          fi
+          if [ -n "$RELEASE_TAG" ]; then
+            version=$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")
+            test "$RELEASE_TAG" = "v$version"
+            if docker manifest inspect "$image:$RELEASE_TAG" >/dev/null 2>&1; then
+              echo 'Release image already exists; refusing to overwrite it.' >&2
+              exit 1
+            fi
+          fi
+          if [ -n "$RELEASE_TAG" ]; then
+            docker tag "$image:$tag" "$image:$RELEASE_TAG"
+            docker push "$image:$RELEASE_TAG"
+          fi
+          echo "Published $image:$tag (linux/amd64). Pin its digest for deployment." >> "$GITHUB_STEP_SUMMARY"

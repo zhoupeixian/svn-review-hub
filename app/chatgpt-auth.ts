@@ -1,5 +1,6 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { authConfig, localAuthEnabled, SESSION_COOKIE, validSession } from '@/lib/local-auth';
 
 export type ChatGPTUser = {
   userId: string;
@@ -20,6 +21,14 @@ const CALLBACK_PATH = '/callback';
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
+  if (localAuthEnabled()) {
+    const origin = requestHeaders.get('origin');
+    if (origin && origin !== authConfig().origin) return null;
+    const token = requestHeaders.get('cookie')?.split(';').map((part) => part.trim())
+      .find((part) => part.startsWith(`${SESSION_COOKIE}=`))?.slice(SESSION_COOKIE.length + 1) ?? '';
+    if (!await validSession(token)) return null;
+    return { userId: 'local-admin', email: 'admin@localhost', displayName: '管理员', fullName: null };
+  }
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!userId || !email) return null;
@@ -50,10 +59,11 @@ export async function requireChatGPTUser(
 
 export function chatGPTSignInPath(returnTo: string): string {
   const safeReturnTo = safeRelativeReturnPath(returnTo);
-  return `${SIGN_IN_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
+  return `${localAuthEnabled() ? '/login' : SIGN_IN_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
 }
 
 export function chatGPTSignOutPath(returnTo = '/'): string {
+  if (localAuthEnabled()) return '/login';
   const safeReturnTo = safeRelativeReturnPath(returnTo);
   return `${SIGN_OUT_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
 }

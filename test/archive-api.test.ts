@@ -5,8 +5,10 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const user = { userId: 'admin-1', displayName: '管理员', email: 'admin@example.com', fullName: '管理员' };
 vi.mock('@/app/chatgpt-auth', () => ({ getChatGPTUser: vi.fn(async () => user) }));
 
-import { archiveReviewsForProject, POST as archive } from '@/app/api/reviews/archive/route';
-import { POST as restore, restoreReviewsForProject } from '@/app/api/reviews/restore/route';
+import { POST as archive } from '@/app/api/reviews/archive/route';
+import { archiveReviewsForProject } from '@/lib/project-review-archive';
+import { POST as restore } from '@/app/api/reviews/restore/route';
+import { restoreReviewsForProject } from '@/lib/project-review-restore';
 import { ingestReview } from '@/lib/reviews';
 
 const DB = (env as { DB: D1Database }).DB;

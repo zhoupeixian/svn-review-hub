@@ -6,7 +6,7 @@
 
 本项目负责展示和管理审查结果；SVN 更新、构建及代码审查由外部自动化完成，门户接收其输出。
 
-[本地运行](#本地运行) · [自动同步](#导入和自动同步) · [开发指南](AGENTS.md) · [反馈与贡献](#反馈与贡献)
+[Docker / 服务器部署](docs/deployment.md) · [本地运行](#本地运行) · [自动同步](#导入和自动同步) · [开发指南](AGENTS.md) · [反馈与贡献](#反馈与贡献)
 
 
 ## 系统架构
@@ -15,9 +15,11 @@
   <img src="docs/assets/zherp-system-architecture.svg" alt="ZHERP SVN Review Portal 系统架构" width="100%" />
 </p>
 
+上图展示 Sites / Cloudflare 托管模式。独立服务器与 Docker 复用相同业务流程，运行时改为 Next.js + SQLite，管理员身份改为本地签名会话，详见 [部署指南](docs/deployment.md)。
+
 ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端或代码审查执行器。SVN 更新、构建和代码审查在本仓库外完成，生成 Markdown 审查日志后再进入门户。
 
-### 架构与数据流
+### 托管模式的数据流
 
 ```text
 ┌──────────────────── 本仓库外 ────────────────────┐
@@ -58,7 +60,7 @@ ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端
 
 自动同步脚本只读取外部自动化已经生成的 Markdown，并通过 `POST /api/reviews` 和项目级同步密钥上传；它不会主动访问 SVN。服务端解析日志后，将项目、日志元数据、Revision、Issue、状态事件和搜索索引写入 D1，原始 Markdown 单独保存到 R2。
 
-浏览器用户可进行日志检索、问题协作和归档浏览；管理员身份由 OpenAI Sites 托管环境提供的可信身份头识别。GitHub Actions 仅执行 Node/jsdom 测试、Workers 测试、类型检查、lint 和构建验证，不负责生产部署。
+浏览器用户可进行日志检索、问题协作和归档浏览；管理员身份由 OpenAI Sites 托管环境提供的可信身份头识别。GitHub Actions 验证 Node/jsdom、Workers、SQLite、两种生产构建和容器部署链路；发布工作流提供容器分发，不自动部署服务器。
 
 ## 能做什么
 
@@ -83,11 +85,11 @@ ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端
 
 从项目目录进入目标项目，筛选日志或问题，打开详情查看原始上下文，再填写问题状态与处理说明。当前问题支持匿名协作；匿名记录不代表经过认证的操作者身份。归档内容只读。旧 `/admin` 等兼容入口对应默认 `zherp` 项目，新集成应优先使用带项目路径的入口。
 
-管理员登录依赖托管环境提供的 ChatGPT 身份。管理员表为空时，首个通过管理员检查的已登录用户会被登记为管理员，后续用户需要已在管理员表中；首次初始化应由项目负责人完成。
+独立服务器与 Docker 使用 `/login` 的随机管理员密码登录，配置见 [部署指南](docs/deployment.md)。Sites 托管环境使用 ChatGPT 身份。管理员表为空时，首个通过管理员检查的已登录用户会被登记为管理员，后续用户需要已在管理员表中；首次初始化应由项目负责人完成。
 
 ## 本地运行
 
-需要 Node.js **22.13.0 或更高版本**、npm 和 Git。以下示例使用 PowerShell；已克隆仓库的开发者直接进入现有目录，不要重复克隆。
+开发与原生部署支持 Node.js **22.13.0+ 的 22 LTS / 24 LTS**、npm 和 Git，推荐 Node.js 24。下面是 Cloudflare 开发环境；希望直接使用项目请按 [独立部署指南](docs/deployment.md) 操作。以下示例使用 PowerShell；已克隆仓库的开发者直接进入现有目录，不要重复克隆。
 
 ```powershell
 git clone https://github.com/zhoupeixian/zherp-svn-review-portal.git
@@ -111,7 +113,7 @@ npm run dev
 
 访问终端实际输出的本地地址。`vite.config.ts` 根据 [.openai/hosting.json](.openai/hosting.json) 配置本地 Cloudflare 模拟环境，D1 绑定为 `DB`，R2 绑定为 `FILES`；本地状态保存在 `.wrangler` 等忽略目录中。数据库访问会通过 `ensureReviewSchema()` 初始化和兼容升级审查表。
 
-本地页面启动不等于完整登录链路可用：`/signin-with-chatgpt` 等登录入口和可信身份头依赖 Sites 托管环境，仓库没有独立账号密码登录服务。当前仓库也没有独立的 Wrangler 部署配置或 `deploy` 脚本。
+上述 Cloudflare 开发路径的 `/signin-with-chatgpt` 等登录入口依赖 Sites 可信代理；独立部署改用本地签名会话，不信任托管身份头。仓库没有通用 Wrangler 一键部署脚本，现有 Sites 部署继续使用原平台流程。
 
 ## 导入和自动同步
 
@@ -146,7 +148,7 @@ npm run lint
 npm run build
 ```
 
-生产构建使用 vinext/Vite，产物写入 `dist`。`npm run start` 启动构建产物；构建成功不代表线上 D1/R2、登录或域名已配置。完整测试命令见 [AGENTS.md](AGENTS.md#测试与验证)，测试必须分 Node/jsdom 与 Workers 两种环境。
+Cloudflare 生产构建使用 vinext/Vite，产物写入 `dist`。`npm run start` 启动构建产物；构建成功不代表线上 D1/R2、登录或域名已配置。完整测试命令见 [AGENTS.md](AGENTS.md#测试与验证)，测试必须分 Node/jsdom 与 Workers 两种环境。
 
 已有部署可执行只读冒烟检查：
 
@@ -159,8 +161,12 @@ npm run smoke:production
 
 ## 技术与开发文档
 
-React 19、Next.js App Router 约定、vinext/Vite、TypeScript、Tailwind CSS 4；运行于 Cloudflare Workers，D1 保存结构化数据，R2 保存 Markdown 原文，Drizzle 管理 schema 和迁移文件。
+React 19、Next.js App Router、TypeScript、Tailwind CSS 4。Cloudflare 模式经 vinext/Vite 运行，使用 D1 + R2；独立模式经 Next.js standalone 运行，使用 SQLite 同时保存结构化数据和原文。两种模式共享业务实现，Drizzle 管理 schema 和迁移历史。
 
+独立模式另执行 `npm run test:server`、`npm run build:server` 和 `npm run verify:server`；后者启动全新本机实例并验证登录、同步、隔离、重启与备份恢复。
+
+- [部署、升级与备份恢复](docs/deployment.md)：Docker Compose、原生服务器、HTTPS 与配置。
+- [贡献流程](CONTRIBUTING.md) 与 [安全政策](SECURITY.md)。
 - [开发代理与开发者指南](AGENTS.md)：源码地图、业务约束、测试分流、修改边界。
 - [版本发布流程](docs/release/README.md)：CI、测试报告、Release 草稿与部署边界。
 - [历史设计与计划](docs/superpowers/)：理解早期设计，不作为当前功能清单。
@@ -178,4 +184,4 @@ React 19、Next.js App Router 约定、vinext/Vite、TypeScript、Tailwind CSS 4
 
 ## 许可证
 
-当前仓库尚未提供 `LICENSE` 文件，也未声明开源许可证。请勿将其视为已按 MIT、Apache-2.0 等许可证授权的项目；复用或分发前，请联系维护者确认授权范围。
+本项目采用 [MIT 许可证](LICENSE)。Copyright (c) 2026 zhoupeixian。第三方依赖仍遵循各自许可证。

@@ -2,7 +2,7 @@
 
 本文是仓库根目录的代理开发指引，适用于整个项目；若子目录新增 `AGENTS.md`，修改该目录时还需读取其更具体的约定。产品使用、配置与同步操作见 [README.md](README.md)。
 
-项目将外部 SVN 审查 Markdown 导入多项目门户：React/TypeScript 页面使用 Next.js App Router 约定，经 vinext/Vite 运行于 Cloudflare Workers；D1 存储结构化记录，R2 保存原文。主要工作包括解析和导入、问题协作、项目隔离与管理。
+项目将外部 SVN 审查 Markdown 导入多项目门户：React/TypeScript 页面使用 Next.js App Router 约定，经 vinext/Vite 运行于 Cloudflare Workers；D1 存储结构化记录，R2 保存原文。独立服务器模式使用 Next.js standalone 和 `node:sqlite`；结构化数据与原文同存一个 SQLite 文件。主要工作包括解析和导入、问题协作、项目隔离与管理。部署操作见 [部署指南](docs/deployment.md)。
 
 ## 开始工作
 
@@ -19,7 +19,7 @@
 - React 使用函数组件；需要客户端交互的组件才声明 `'use client'`。遵循 `app/` 路由约定，复用 `lib/` 现有业务函数，不在页面中另建一套鉴权或数据访问逻辑。
 - SQL 保留绑定参数和项目范围限制；API 参数校验、响应和异常处理遵循同类路由，不通过放宽校验消除测试失败。
 - 测试放在 `test/`，命名为 `*.test.ts` 或 `*.test.tsx`，按已有 Vitest 和 Testing Library 写法验证行为。UI 样式沿用 Tailwind 和 `app/globals.css` 的现有模式。
-- 不手改 `dist/`、`.next/`、`.vinext/`、`.wrangler/`、`node_modules/` 或 `tsconfig.tsbuildinfo`；不读取或输出真实 `.env`、`.dev.vars` 密钥，配置说明以样例文件为入口。
+- 不手改 `dist/`、`.next/`、`.next-server/`、`.vinext/`、`.wrangler/`、`node_modules/` 或 `tsconfig.tsbuildinfo`；不读取或输出真实 `.env`、`.dev.vars` 密钥，配置说明以样例文件为入口。
 
 ## 源码地图
 
@@ -41,6 +41,8 @@
 | `db/schema.ts`、`drizzle/` | Drizzle 表定义和迁移历史 |
 | `vite.config.ts`、`.openai/hosting.json` | vinext、Sites、Cloudflare 与本地绑定 |
 | `vitest.config.ts`、`test/apply-migrations.ts` | 测试运行环境、D1 测试迁移 |
+| `lib/runtime.ts`、`lib/runtime-node.ts`、`lib/node-storage.ts` | Cloudflare 绑定入口、Next 构建替换、SQLite 的应用所需 D1/R2 操作适配 |
+| `lib/local-auth.ts`、`app/api/session/`、`proxy.ts` | 独立管理员签名会话、来源限流、可信代理头边界 |
 | `scripts/` | 本地日志同步与生产只读冒烟命令 |
 
 ## 数据流和必须保留的行为
@@ -53,7 +55,9 @@
 - `ensureReviewSchema()` 必须可重复执行并兼容已有数据。修改表结构需同时核对 `db/schema.ts`、`drizzle/` 和运行时升级逻辑，不能只修改一处。`npm run db:generate` 只生成迁移，不等于已应用到部署数据库。
 - 通用 schema 初始化不能要求同步主密钥可用。旧 `REVIEW_SYNC_KEY` 的一次迁移在 `authorizeProjectSync()` 路径执行，普通读取和手工上传不能被旧密钥迁移阻塞。
 - `REVIEW_SYNC_MASTER_KEY` 只供服务端加密项目密钥；同步客户端持有单项目密钥。不要输出、提交密钥或在业务审计中保存明文/密文。项目管理与相应审计的事务行为、项目删除后审计保留都需维持。
-- 身份来自 Sites 的可信代理头，不能将可任意伪造头的直连服务视为已受保护的生产登录系统。管理员首次登记行为见 README 和 `allowAdministrator()`。
+- Cloudflare 身份来自 Sites 可信代理头；独立模式只接受签名 Cookie，不能接受外部 `oai-authenticated-*` 身份头。代理的 IP 信任须显式启用并配合入口覆盖。管理员首次登记行为见 README 和 `allowAdministrator()`。
+- `lib/runtime.ts` 是运行时绑定的唯一入口；独立构建使用 `.next-server/` 与 `tsconfig.server.json` 隔离生成文件，通过 Next webpack 替换到 `runtime-node.ts`，不要在业务模块直接引入 `cloudflare:workers`。SQLite `batch()` 必须同步执行整个事务后才返回 Promise，保留回滚、外键、FTS 和原文持久化。只支持单实例本地磁盘，不支持直接导入现有 D1 数据库。
+- Next 路由模块只导出合法 HTTP handlers / 配置，共用辅助函数放在 `lib/`。不得通过忽略类型错误绕过独立构建。
 
 修改解析器时，用真实支持格式和生产接收链路建立回归；仅验证解析函数不代表持久化计数正确。修复旧数据需单独确认重导入或迁移范围，代码更新不会自动重写所有历史记录。
 
@@ -65,9 +69,12 @@
 npm ci
 
 npm run test:ci
+npm run test:server
 npm run typecheck
 npm run lint
 npm run build
+npm run build:server
+npm run verify:server
 git diff --check
 ```
 
@@ -90,6 +97,8 @@ npm run test:unit -- test/review-parser-corpus.test.ts test/ui-current-review-fl
 npm run test:workers -- test/sync-health.test.ts
 ```
 
+`test:server` 将同一组 Workers 业务用例放到 Node / SQLite 适配器上运行；新的独立认证测试在默认 Node 组。`verify:server` 只启动新的本机临时实例，不接受线上 URL。传入镜像名时验收命名卷、容器重启及恢复实例。测试产物在 `outputs/`，测试容器和卷会保留，清理需遵守删除约定。
+
 常见验证陷阱：
 
 - `cloudflare:workers` 无法加载：先检查是否漏用 `--mode workers`，不要改业务实现来适应错误环境。
@@ -101,8 +110,8 @@ npm run test:workers -- test/sync-health.test.ts
 
 ## 交付和文档维护
 
-- GitHub CI 在 Linux Node.js 22 / 24 和 Windows Node.js 24 执行同一套验证；`CI passed` 是汇总检查。GitHub Actions 固定到完整提交 SHA，更新时核对官方来源。
-- 发布操作见 [版本发布流程](docs/release/README.md)。Release draft 仅由维护者手动触发，通过完整 CI 后创建草稿；不自动公开发布、部署或发布 npm / 容器包。已有同名 Release 或标签不得覆盖。
+- GitHub CI 在 Linux Node.js 22 / 24 和 Windows Node.js 24 验证两种运行模式，并在 Linux 验收 Docker；`CI passed` 是汇总检查。GitHub Actions 固定到完整提交 SHA，更新时核对官方来源。
+- 发布操作见 [版本发布流程](docs/release/README.md)。Release draft 仅由维护者手动触发，通过完整 CI 后创建草稿；不自动公开 Release 或部署服务器。Publish container 手动发布验证过的提交镜像；公开 Release 触发版本镜像，固定 SHA / digest，不覆盖已有版本。此应用不发布 npm 包。已有同名 Release 或标签不得覆盖。
 - 只修改任务需要的内容，不顺手重构相邻模块、不擅自升级依赖、不编辑生成产物或其他工作树。
 - 报告具体行为变化、测试命令/结果、未验证边界及已有故障；不要沿用旧 PR 的测试数量作为当前结果。
 - 产品能力、页面入口、配置、操作命令变更时更新 `README.md`；源码职责、业务约束、测试方法变更时更新本文。避免把同一操作说明维护在两处。

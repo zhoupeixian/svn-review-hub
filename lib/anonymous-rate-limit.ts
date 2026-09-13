@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { env } from '@/lib/runtime';
 import { ensureReviewSchema } from '@/lib/reviews';
 
 const WINDOW_MS = 10 * 60 * 1000;

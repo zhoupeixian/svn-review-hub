@@ -1,4 +1,4 @@
-import { archiveReviewsForProject } from '@/app/api/reviews/archive/route';
+import { archiveReviewsForProject } from '@/lib/project-review-archive';
 import { handleAccessibleReviewProject } from '@/lib/project-api';
 
 type Context = {
