@@ -51,15 +51,22 @@ export function createNodeStorage(filename: string) {
     async exec(sql: string) { sqlite.exec(sql); return { count: 1, duration: 0 }; },
   };
 
+  function metadataObject(row: Record<string, unknown>) {
+    const metadata = JSON.parse(String(row.metadata));
+    const etag = metadata.etag ?? '';
+    return {
+      key: String(row.key), size: Number(row.size), etag, httpEtag: `"${etag}"`,
+      uploaded: new Date(String(row.uploaded)),
+      httpMetadata: metadata.httpMetadata, customMetadata: metadata.customMetadata,
+    };
+  }
+
   function object(key: string) {
     const row = sqlite.prepare('SELECT content, metadata, uploaded FROM portal_objects WHERE key = ?').get(key);
     if (!row) return null;
     const content = Buffer.from(row.content as Uint8Array);
-    const metadata = JSON.parse(String(row.metadata));
-    const etag = createHash('sha256').update(content).digest('hex');
     return {
-      key, size: content.length, etag, httpEtag: `"${etag}"`, uploaded: new Date(String(row.uploaded)),
-      httpMetadata: metadata.httpMetadata, customMetadata: metadata.customMetadata,
+      ...metadataObject({ ...row, key, size: content.length }),
       async text() { return content.toString('utf8'); },
       async arrayBuffer() { return Uint8Array.from(content).buffer; },
       get body() { return new Blob([content]).stream(); },
@@ -68,14 +75,17 @@ export function createNodeStorage(filename: string) {
 
   const files = {
     async get(key: string) { return object(key); },
-    async head(key: string) { return object(key); },
+    async head(key: string) {
+      const row = sqlite.prepare('SELECT key, length(content) AS size, metadata, uploaded FROM portal_objects WHERE key = ?').get(key);
+      return row ? metadataObject(row) : null;
+    },
     async put(key: string, value: string | ArrayBuffer | ArrayBufferView, options: R2PutOptions = {}) {
       const content = typeof value === 'string' ? Buffer.from(value) :
         ArrayBuffer.isView(value) ? Buffer.from(value.buffer, value.byteOffset, value.byteLength) : Buffer.from(value);
       sqlite.prepare(`INSERT INTO portal_objects (key, content, metadata, uploaded) VALUES (?, ?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET content=excluded.content, metadata=excluded.metadata, uploaded=excluded.uploaded`)
-        .run(key, content, JSON.stringify({ httpMetadata: options.httpMetadata, customMetadata: options.customMetadata }), new Date().toISOString());
-      return object(key);
+        .run(key, content, JSON.stringify({ etag: createHash('sha256').update(content).digest('hex'), httpMetadata: options.httpMetadata, customMetadata: options.customMetadata }), new Date().toISOString());
+      return files.head(key);
     },
     async delete(keys: string | string[]) {
       const statement = sqlite.prepare('DELETE FROM portal_objects WHERE key = ?');
@@ -84,12 +94,12 @@ export function createNodeStorage(filename: string) {
     async list(options: { prefix?: string; cursor?: string; limit?: number } = {}) {
       const prefix = options.prefix ?? '';
       const limit = Math.max(1, Math.min(options.limit ?? 1000, 1000));
-      const rows = sqlite.prepare('SELECT key FROM portal_objects WHERE substr(key, 1, ?) = ? AND key > ? ORDER BY key LIMIT ?')
+      const rows = sqlite.prepare('SELECT key, length(content) AS size, metadata, uploaded FROM portal_objects WHERE substr(key, 1, ?) = ? AND key > ? ORDER BY key LIMIT ?')
         .all(prefix.length, prefix, options.cursor ?? '', limit + 1);
       const page = rows.slice(0, limit);
       const truncated = rows.length > limit;
       return {
-        objects: page.map((row) => object(String(row.key))!), truncated,
+        objects: page.map(metadataObject), truncated,
         cursor: truncated ? String(page.at(-1)!.key) : undefined, delimitedPrefixes: [],
       };
     },
