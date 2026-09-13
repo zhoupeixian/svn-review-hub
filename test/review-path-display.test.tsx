@@ -7,6 +7,7 @@ import {
   projectRelativePath,
   relativizeProjectPaths,
   sanitizeStoredReviewMarkdown,
+  sanitizeStoredReviewText,
 } from '../lib/project-paths';
 
 describe('项目路径展示', () => {
@@ -28,10 +29,11 @@ describe('项目路径展示', () => {
     expect(relativizeProjectPaths(historical)).toBe(
       '相关文件：solutions/erp/Form.xml:633',
     );
-    expect(sanitizeStoredReviewMarkdown(historical, 'zherp')).toBe(
+    expect(sanitizeStoredReviewText(historical, 'zherp')).toBe(
       '相关文件：solutions/erp/Form.xml:633',
     );
-    expect(sanitizeStoredReviewMarkdown(historical, 'haihua')).toBe(historical);
+    expect(sanitizeStoredReviewText(historical, 'haihua')).toBe(historical);
+    expect(sanitizeStoredReviewMarkdown(historical, 'zherp')).not.toContain('D:\\SVN\\ZHERP');
   });
 
   it('正常 HTTP 链接保持可点击', () => {
