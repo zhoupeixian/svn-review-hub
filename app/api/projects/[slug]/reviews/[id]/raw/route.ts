@@ -1,4 +1,5 @@
 import { getAccessibleReviewProject } from '@/lib/project-api';
+import { sanitizeStoredReviewMarkdown } from '@/lib/project-paths';
 import { getReviewMarkdown } from '@/lib/reviews';
 
 type Context = {
@@ -14,7 +15,7 @@ export async function GET(_request: Request, { params }: Context) {
   const review = await getReviewMarkdown(project.id, Number(id));
   if (!review) return Response.json({ error: '审查日志不存在。' }, { status: 404 });
 
-  return new Response(review.content, {
+  return new Response(sanitizeStoredReviewMarkdown(review.content, project.slug), {
     headers: {
       'content-type': 'text/markdown; charset=utf-8',
       'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(`${project.slug}-${review.sourceName}`)}`,
