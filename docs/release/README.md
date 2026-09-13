@@ -44,7 +44,7 @@
 
 ## 容器发布
 
-在 main 手动运行 `gh workflow run container-publish.yml --ref main`，完整 CI 与实际镜像验收成功后发布 `ghcr.io/zhoupeixian/zherp-svn-review-portal:sha-<完整提交号>`。首次发布后在 Package settings 确认可见性为 Public，并验证匿名拉取。
+在 main 手动运行 `gh workflow run container-publish.yml --ref main`，完整 CI 与实际镜像验收成功后发布 `ghcr.io/zhoupeixian/svn-review-hub:sha-<完整提交号>`。首次发布后在 Package settings 确认可见性为 Public，并验证匿名拉取。
 
 维护者公开 Release 时，工作流核对标签与 package.json 版本一致，发布 `vX.Y.Z` 镜像。如果同一 SHA 镜像已存在，核对 revision 标签并重新验收后复用，避免重新构建覆盖历史镜像；已有版本标签拒绝覆盖。
 
