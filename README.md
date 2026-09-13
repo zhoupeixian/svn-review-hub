@@ -119,23 +119,25 @@ npm run dev
 
 少量日志可在项目管理页手工上传。持续同步使用 [scripts/sync-local-reviews.mjs](scripts/sync-local-reviews.mjs)，配置样例见 [.env.example](.env.example)。
 
-脚本默认读取 `$HOME/.codex/automations/zherp/review-portal.env`，也可通过 `REVIEW_PORTAL_CONFIG` 指定文件；已有进程环境变量优先。**脚本不会自动读取仓库根目录的 `.env`**，如使用它须显式指定。
+配置文件可以放在任意位置，推荐通过 `--config <path>` 显式指定，也可设置 `REVIEW_PORTAL_CONFIG`；已有进程环境变量优先于配置文件。为了兼容既有 ZHERP 自动化，未显式指定时最后才尝试旧的 `$HOME/.codex/automations/zherp/review-portal.env`。**脚本不会自动读取仓库根目录的 `.env`**。
 
 | 同步端变量 | 是否必需 | 含义 |
 | --- | --- | --- |
 | `REVIEW_PORTAL_URL` | 是 | 目标站点地址 |
 | `REVIEW_PORTAL_PROJECT_SLUG` | 是 | 目标项目标识，如 `zherp` |
+| `REVIEW_PROJECT_ROOT` | 是 | 生成审查日志的本地 SVN 工作副本根目录；仅用于上传前把该根目录下的绝对路径转换为相对路径 |
 | `REVIEW_PORTAL_SYNC_KEY` | 是 | 该项目的同步密钥，从项目管理获得 |
-| `REVIEW_LOG_ROOT` | 是 | 本地审查日志根目录 |
+| `REVIEW_LOG_ROOT` | 是 | 本地审查日志根目录，可位于任意位置，不要求处于项目目录内 |
 | `REVIEW_PORTAL_DISPATCH_TOKEN` | 否 | 私有 Sites 站点的服务访问令牌 |
 
 ```powershell
-# 先按 .env.example 准备本地 .env，填写实际配置
-$env:REVIEW_PORTAL_CONFIG = Join-Path (Get-Location) '.env'
-npm run sync:reviews -- --date 2026-09-12
+# 配置文件位置任意；这里仅举例
+npm run sync:reviews -- --config "E:\configs\zherp-review.env" --date 2026-09-12
 ```
 
-此命令会向目标站点写入日志。指定日期时扫描 `<REVIEW_LOG_ROOT>/<日期>/`，不指定时递归扫描整个根目录；仅接收文件名为 `svn审查日志-*.md` 的文件。脚本以相对路径作为 `sourceKey`，通过 `POST /api/reviews` 携带项目标识及 `x-review-sync-key` 上传。同项目、同来源重复导入会合并日志，保留已有问题的处理状态及历史。
+此命令会向目标站点写入日志。指定日期时扫描 `<REVIEW_LOG_ROOT>/<日期>/`，不指定时递归扫描整个根目录；仅接收文件名为 `svn审查日志-*.md` 的文件。脚本以相对路径作为 `sourceKey`，通过 `POST /api/reviews` 携带项目标识及 `x-review-sync-key` 上传。
+
+本地原始 Markdown 不会被修改。上传前脚本只在内存中按 `REVIEW_PROJECT_ROOT` 去除工作副本绝对路径，并将 Markdown 本地文件链接改为不可点击的相对文件引用；如果转换后仍检测到其他绝对本地路径，本次上传会失败而不是把本机路径发送到 Portal。服务端还会在持久化前做一次兜底检查。浏览器手工上传没有本地根目录配置，因此上传文件本身必须已经使用相对路径。同项目、同来源重复导入会合并日志，保留已有问题的处理状态及历史。
 
 服务端主密钥不要复制到同步主机。实际 `.env`、`.dev.vars`、访问令牌和日志中的敏感信息不要提交到仓库。
 
