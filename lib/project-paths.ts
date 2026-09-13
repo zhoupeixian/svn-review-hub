@@ -24,8 +24,12 @@ export function relativizeProjectPaths(value: string): string {
   );
 }
 
+export function sanitizeStoredReviewText(value: string, projectSlug: string): string {
+  return projectSlug === 'zherp' ? relativizeProjectPaths(value) : value;
+}
+
 export function sanitizeStoredReviewMarkdown(value: string, projectSlug: string): string {
   if (projectSlug !== 'zherp') return value;
-  const legacyRoot = ['D:', 'SVN', 'ZHERP'].join('\\\\');
+  const legacyRoot = ['D:', 'SVN', 'ZHERP'].join('\\');
   return relativizeReviewMarkdown(value, legacyRoot);
 }
