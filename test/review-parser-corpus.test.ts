@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { parseReviewMarkdown } from '../lib/review-parser';
 
 describe('真实审查日志格式兼容', () => {
+  it('无一级标题时使用通用 SVN 审查标题', () => {
+    const parsed = parseReviewMarkdown([
+      '日期：2026-09-13',
+      '审查范围：共 0 个 revision',
+    ].join('\n'));
+
+    expect(parsed.title).toBe('SVN 提交审查日志');
+  });
+
   it('2026-09-08：严重级计数以结构化问题为唯一事实来源', () => {
     const parsed = parseReviewMarkdown([
       '# ZHERP 当日 SVN 提交审查日志',
