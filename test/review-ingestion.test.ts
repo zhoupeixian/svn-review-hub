@@ -411,6 +411,17 @@ describe('审查日志合并导入', () => {
     await clearBucket();
   });
 
+  it('拒绝仍包含绝对本地路径的日志且不写入存储', async () => {
+    const markdown = zeroRevisionMarkdown() +
+      '\n相关文件：C:\\Users\\reviewer\\workspace\\secret.java:42';
+
+    await expect(ingestReview(ingestInput(markdown))).rejects.toThrow(
+      '日志仍包含绝对本地路径',
+    );
+    expect(await reviewStorageRow()).toBeNull();
+    expect(await bucketKeys()).toEqual([]);
+  });
+
   it('拒绝非零提交计数与提交表不完整的日志', async () => {
     const incomplete = reviewMarkdown20260829().replace(
       '| r53840 | guangyh | 修正条件判断 | 已审查 |\n',
