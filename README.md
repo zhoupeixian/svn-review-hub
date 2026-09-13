@@ -1,4 +1,4 @@
-# ZHERP SVN 审查门户
+# SVN Review Hub
 
 [![CI](https://github.com/zhoupeixian/zherp-svn-review-portal/actions/workflows/ci.yml/badge.svg)](https://github.com/zhoupeixian/zherp-svn-review-portal/actions/workflows/ci.yml)
 
@@ -12,12 +12,12 @@
 ## 系统架构
 
 <p align="center">
-  <img src="docs/assets/zherp-system-architecture.svg" alt="ZHERP SVN Review Portal 系统架构" width="100%" />
+  <img src="docs/assets/svn-review-hub-architecture.svg" alt="SVN Review Hub 系统架构" width="100%" />
 </p>
 
 上图展示 Sites / Cloudflare 托管模式。独立服务器与 Docker 复用相同业务流程，运行时改为 Next.js + SQLite，管理员身份改为本地签名会话，详见 [部署指南](docs/deployment.md)。
 
-ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端或代码审查执行器。SVN 更新、构建和代码审查在本仓库外完成，生成 Markdown 审查日志后再进入门户。
+SVN Review Hub 的职责边界是“接收并管理审查结果”，不是 SVN 客户端或代码审查执行器。SVN 更新、构建和代码审查在本仓库外完成，生成 Markdown 审查日志后再进入门户。
 
 ### 托管模式的数据流
 
@@ -38,7 +38,7 @@ ZHERP 的职责边界是“接收并管理审查结果”，不是 SVN 客户端
       项目级同步密钥               Sites 管理员身份
               └───────────┬────────────┘
                           ▼
-┌──────────── ZHERP SVN Review Portal ─────────────┐
+┌──────────────── SVN Review Hub ──────────────────┐
 │        OpenAI Sites / Cloudflare Workers         │
 │                                                  │
 │  Markdown 解析 / 增量导入 / 状态保持             │
@@ -157,7 +157,7 @@ $env:REVIEW_PORTAL_URL = 'https://your-review-portal.example'
 npm run smoke:production
 ```
 
-冒烟命令直接读取进程环境变量，依次检查首页、旧管理地址重定向、项目管理入口认证保护、ZHERP 只读 API；不发送 Cookie、同步密钥或服务令牌。退出码 `0` 为通过、`1` 为检查失败、`2` 为配置错误；私有站点的外层访问保护可能使检查无法通过。
+冒烟命令直接读取进程环境变量，依次检查首页、旧管理地址重定向、项目管理入口认证保护、默认 `zherp` 项目只读 API；不发送 Cookie、同步密钥或服务令牌。退出码 `0` 为通过、`1` 为检查失败、`2` 为配置错误；私有站点的外层访问保护可能使检查无法通过。
 
 ## 技术与开发文档
 

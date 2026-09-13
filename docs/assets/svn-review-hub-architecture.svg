@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
-  <title id="title">ZHERP SVN Review Portal 系统架构</title>
-  <desc id="desc">展示外部 SVN 审查自动化生成 Markdown 日志，经自动同步或管理员手工上传进入 ZHERP Portal，并分别读写 Cloudflare D1 与 R2；底部为仅用于质量验证的 GitHub Actions CI。</desc>
+  <title id="title">SVN Review Hub 系统架构</title>
+  <desc id="desc">展示外部 SVN 审查自动化生成 Markdown 日志，经自动同步或管理员手工上传进入 SVN Review Hub，并分别读写 Cloudflare D1 与 R2；底部为仅用于质量验证的 GitHub Actions CI。</desc>
   <defs>
     <style>
       text{font-family:Inter,"Noto Sans SC","Microsoft YaHei",Arial,sans-serif;fill:#17324d}
@@ -24,7 +24,7 @@
   </defs>
 
   <rect width="1600" height="900" fill="#ffffff"/>
-  <text x="40" y="55" class="title">ZHERP SVN Review Portal — 系统架构</text>
+  <text x="40" y="55" class="title">SVN Review Hub — 系统架构</text>
   <text x="40" y="84" class="subtitle">基于当前仓库实现整理；SVN 更新、构建与代码审查由本仓库外部自动化完成</text>
 
   <!-- users -->
@@ -82,7 +82,7 @@
 
   <!-- portal -->
   <rect x="690" y="220" rx="14" width="600" height="485" class="blue"/>
-  <text x="715" y="258" class="section">ZHERP SVN Review Portal</text>
+  <text x="715" y="258" class="section">SVN Review Hub</text>
   <text x="715" y="285" class="subtitle">OpenAI Sites 托管 · Cloudflare Workers Runtime</text>
 
   <rect x="715" y="310" rx="10" width="550" height="150" class="box"/>

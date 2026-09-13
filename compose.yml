@@ -1,6 +1,6 @@
 services:
   portal:
-    image: ${PORTAL_IMAGE:-zherp-svn-review-portal:local}
+    image: ${PORTAL_IMAGE:-svn-review-hub:local}
     build: .
     restart: unless-stopped
     init: true

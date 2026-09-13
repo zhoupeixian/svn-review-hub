@@ -17,11 +17,11 @@ const siteOrigin = process.env.SITE_ORIGIN?.replace(/\/$/, '');
 const socialImage = siteOrigin ? siteOrigin + '/og.png' : undefined;
 
 export const metadata: Metadata = {
-  title: 'ZHERP SVN 审查日志',
-  description: '团队可随时查阅的 ZHERP 当日 SVN 提交审查日志。',
+  title: 'SVN Review Hub',
+  description: '多项目 SVN 审查日志与问题协作门户。',
   metadataBase: siteOrigin ? new URL(siteOrigin) : undefined,
   openGraph: {
-    title: 'ZHERP SVN 审查日志',
+    title: 'SVN Review Hub',
     description: '每天的提交判断，沉淀为团队工程记忆。',
     type: 'website',
     images: socialImage
@@ -30,14 +30,14 @@ export const metadata: Metadata = {
             url: socialImage,
             width: 1200,
             height: 630,
-            alt: 'ZHERP SVN 审查日志',
+            alt: 'SVN Review Hub',
           },
         ]
       : [],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'ZHERP SVN 审查日志',
+    title: 'SVN Review Hub',
     description: '每天的提交判断，沉淀为团队工程记忆。',
     images: socialImage ? [socialImage] : [],
   },
