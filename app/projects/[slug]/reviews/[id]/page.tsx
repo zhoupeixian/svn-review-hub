@@ -5,7 +5,10 @@ import remarkGfm from 'remark-gfm';
 import IssueStatusPanel from '@/app/components/issue-status-panel';
 import ReviewMarkdownLink, { reviewMarkdownUrlTransform } from '@/app/components/review-markdown-link';
 import { getAccessibleReviewProject } from '@/lib/project-api';
-import { sanitizeStoredReviewMarkdown } from '@/lib/project-paths';
+import {
+  sanitizeStoredReviewMarkdown,
+  sanitizeStoredReviewText,
+} from '@/lib/project-paths';
 import { getReviewDetail } from '@/lib/reviews';
 
 export const dynamic = 'force-dynamic';
@@ -72,7 +75,7 @@ export default async function ProjectReviewPage({ params }: Props) {
                     <div><p className="risk-chip" data-severity={issue.severity}>{issue.severity}</p><h3 className="mt-3 text-base font-bold text-[#223c30]">{issue.title}</h3></div>
                     {issue.relatedRevisions && <span className="meta-chip">r{issue.relatedRevisions.split('、').join(' · r')}</span>}
                   </div>
-                  <p className="mt-4 max-w-4xl whitespace-pre-line text-sm leading-7 text-[#607167]">{sanitizeStoredReviewMarkdown(issue.detail, project.slug)}</p>
+                  <p className="mt-4 max-w-4xl whitespace-pre-line text-sm leading-7 text-[#607167]">{sanitizeStoredReviewText(issue.detail, project.slug)}</p>
                   <IssueStatusPanel
                     issue={issue}
                     statusApiPath={`/api/projects/${encodeURIComponent(project.slug)}/issues/${issue.id}/status`}
