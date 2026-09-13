@@ -341,19 +341,82 @@ function tableCells(line: string): string[] {
   return cells;
 }
 
+type IssueSection = {
+  severity: ParsedIssue['severity'];
+  inlineTitle?: string;
+  index: number;
+  length: number;
+};
+
+function findIssueSections(markdown: string): IssueSection[] {
+  const sections: IssueSection[] = [];
+  let lineStart = 0;
+
+  while (lineStart <= markdown.length) {
+    const newlineIndex = markdown.indexOf('\n', lineStart);
+    const lineEnd = newlineIndex >= 0 ? newlineIndex : markdown.length;
+    const rawLine = markdown.slice(lineStart, lineEnd);
+    const heading = parseIssueSectionHeading(rawLine);
+    if (heading) {
+      sections.push({
+        ...heading,
+        index: lineStart,
+        length: rawLine.length,
+      });
+    }
+    if (newlineIndex < 0) break;
+    lineStart = newlineIndex + 1;
+  }
+
+  return sections;
+}
+
+function parseIssueSectionHeading(
+  rawLine: string,
+): Pick<IssueSection, 'severity' | 'inlineTitle'> | null {
+  const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+  if (!line.startsWith('###')) return null;
+
+  let cursor = 3;
+  if (cursor >= line.length || !isLineWhitespace(line[cursor])) return null;
+  while (cursor < line.length && isLineWhitespace(line[cursor])) cursor += 1;
+
+  if (
+    cursor + 1 >= line.length ||
+    line[cursor].toUpperCase() !== 'P' ||
+    !'123'.includes(line[cursor + 1])
+  ) {
+    return null;
+  }
+  const severity = `P${line[cursor + 1]}` as ParsedIssue['severity'];
+  cursor += 2;
+
+  while (cursor < line.length && isLineWhitespace(line[cursor])) cursor += 1;
+  if (cursor === line.length) return { severity };
+
+  if (line[cursor] !== ':' && line[cursor] !== '：') return null;
+  cursor += 1;
+  if (cursor === line.length) return null;
+
+  const inlineTitle = line.slice(cursor).trim();
+  return inlineTitle ? { severity, inlineTitle } : { severity };
+}
+
+function isLineWhitespace(character: string): boolean {
+  return character.trim() === '';
+}
+
 function parseIssues(markdown: string): ParsedIssue[] {
-  const sections = [
-    ...markdown.matchAll(/^###\s+(P[123])(?:\s*[：:]\s*(.+?))?\s*$/gim),
-  ];
+  const sections = findIssueSections(markdown);
   const issues: ParsedIssue[] = [];
 
   for (let index = 0; index < sections.length; index += 1) {
     const section = sections[index];
-    const severity = section[1].toUpperCase() as ParsedIssue['severity'];
-    const start = (section.index ?? 0) + section[0].length;
+    const severity = section.severity;
+    const start = section.index + section.length;
     const nextSectionStart =
       index + 1 < sections.length
-        ? sections[index + 1].index ?? markdown.length
+        ? sections[index + 1].index
         : markdown.length;
     const nextHeadingOffset = markdown
       .slice(start, nextSectionStart)
@@ -361,7 +424,7 @@ function parseIssues(markdown: string): ParsedIssue[] {
     const nextStart =
       nextHeadingOffset >= 0 ? start + nextHeadingOffset : nextSectionStart;
     const body = markdown.slice(start, nextStart);
-    const inlineTitle = section[2]?.trim();
+    const inlineTitle = section.inlineTitle;
     const entries = inlineTitle
       ? [`${inlineTitle}\n${body}`]
       : body.split(/^####\s+/m).slice(1);
