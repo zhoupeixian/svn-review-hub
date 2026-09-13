@@ -9,8 +9,8 @@
 安装 Git 和 Docker Engine / Docker Desktop（Linux 容器）及 Compose v2，然后克隆仓库。以下 Shell 命令在 Linux 执行；Windows 对应使用 PowerShell 的 `Set-Location`，密钥生成和应用命令相同。
 
 ```sh
-git clone https://github.com/zhoupeixian/zherp-svn-review-portal.git
-cd zherp-svn-review-portal
+git clone https://github.com/zhoupeixian/svn-review-hub.git
+cd svn-review-hub
 node scripts/init-server.mjs http://localhost:3000
 docker compose up -d --build
 docker compose ps
@@ -29,17 +29,19 @@ docker run --rm -v "$PWD:/workspace" -w /workspace --entrypoint node node:24-boo
 
 ### 使用 GitHub Packages 镜像
 
-维护者手动运行 **Publish container** 后，会得到经过 CI 和容器验收的 `ghcr.io/zhoupeixian/zherp-svn-review-portal:sha-<完整提交号>`。公开 Release 发布时生成同名 `vX.Y.Z` 镜像。当前镜像平台为 **linux/amd64**；其他架构请自行构建并验证。
+维护者手动运行 **Publish container** 后，会得到经过 CI 和容器验收的 `ghcr.io/zhoupeixian/svn-review-hub:sha-<完整提交号>`。公开 Release 发布时生成同名 `vX.Y.Z` 镜像。当前镜像平台为 **linux/amd64**；其他架构请自行构建并验证。
 
 从成功的工作流记录或 Packages 页面复制真实存在的镜像地址，优先固定 `@sha256:...` 摘要：
 
 ```sh
-export PORTAL_IMAGE=ghcr.io/zhoupeixian/zherp-svn-review-portal@sha256:<实际摘要>
+export PORTAL_IMAGE=ghcr.io/zhoupeixian/svn-review-hub@sha256:<实际摘要>
 docker compose pull
 docker compose up -d --no-build
 ```
 
 PowerShell 使用 `$env:PORTAL_IMAGE = '实际镜像地址'`。首次 GHCR 发布后维护者需确认 Package 为 Public 才能匿名拉取；Private 包需要具有 `read:packages` 权限的凭据。Release 草稿本身不生成可拉取镜像。发布流程不会自动更新你的服务器。
+
+仓库改名前已经发布并固定的 `ghcr.io/zhoupeixian/zherp-svn-review-portal@sha256:...` 镜像可继续用于现有部署；仓库改名后的新发布使用 `ghcr.io/zhoupeixian/svn-review-hub`。不要仅为了名称统一替换一个已经验证并固定摘要的生产镜像。
 
 ## HTTPS 与反向代理
 
@@ -78,8 +80,8 @@ After=network.target
 [Service]
 Type=simple
 User=portal
-WorkingDirectory=/opt/zherp-svn-review-portal
-EnvironmentFile=/opt/zherp-svn-review-portal/.env.server
+WorkingDirectory=/opt/svn-review-hub
+EnvironmentFile=/opt/svn-review-hub/.env.server
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/node scripts/start-server.mjs
 Restart=on-failure
@@ -91,6 +93,8 @@ WantedBy=multi-user.target
 ```
 
 维护账户必须能写入数据目录；按你的系统调整 Node 路径。Windows 可使用现有服务管理工具托管 `npm run start:server`，确保工作目录与环境配置一致。
+
+仓库改名不会要求已有安装目录同步改名；如果现有服务仍位于旧目录，只要 `WorkingDirectory` 和 `EnvironmentFile` 继续指向实际路径即可。上面的 `/opt/svn-review-hub` 仅是新安装示例。
 
 ## 配置
 
