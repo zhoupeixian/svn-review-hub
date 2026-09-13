@@ -2,7 +2,7 @@
 
 安全修复优先提供给最新稳定版本；正式版本发布前以 `main` 为维护基线。旧版本不承诺回补，升级前请备份。
 
-请通过仓库的 [私密漏洞报告](https://github.com/zhoupeixian/zherp-svn-review-portal/security/advisories/new) 提交安全问题，包含受影响版本、复现步骤、影响与可行的修复建议。不要在公开 Issue 中提交尚未修复的利用细节、真实日志、Cookie 或密钥。项目由个人维护，不能承诺固定响应时限。
+请通过仓库的 [私密漏洞报告](https://github.com/zhoupeixian/svn-review-hub/security/advisories/new) 提交安全问题，包含受影响版本、复现步骤、影响与可行的修复建议。不要在公开 Issue 中提交尚未修复的利用细节、真实日志、Cookie 或密钥。项目由个人维护，不能承诺固定响应时限。
 
 审查内容默认可公开浏览，活动问题允许匿名协作；不要将包含敏感源码、客户资料或凭据的日志导入公开站点。内部使用应在入口增加网络访问控制。
 

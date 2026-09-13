@@ -1,6 +1,6 @@
 # 参与贡献
 
-问题反馈请使用 [Issue 模板](https://github.com/zhoupeixian/zherp-svn-review-portal/issues/new/choose)，提供版本、部署方式、复现步骤和脱敏日志。安全问题请使用 [私密报告渠道](SECURITY.md)。较大的功能或架构调整请先在 Issue 中说明使用场景和验收条件。
+问题反馈请使用 [Issue 模板](https://github.com/zhoupeixian/svn-review-hub/issues/new/choose)，提供版本、部署方式、复现步骤和脱敏日志。安全问题请使用 [私密报告渠道](SECURITY.md)。较大的功能或架构调整请先在 Issue 中说明使用场景和验收条件。
 
 开发环境、目录职责及业务约束见 [AGENTS.md](AGENTS.md)。从最新 `main` 创建分支，使用 `npm ci` 安装依赖。提交应聚焦一个问题，修改行为时添加回归测试，并同步 README 或部署说明。
 
