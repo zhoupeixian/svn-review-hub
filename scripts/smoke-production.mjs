@@ -40,7 +40,7 @@ async function runChecks(url) {
     ['首页', () => checkHome(url)],
     ['/admin 重定向', () => checkLegacyAdminRedirect(url)],
     ['项目管理入口认证保护', () => checkProjectAdminEntry(url)],
-    ['ZHERP 日志只读 API', () => checkReadOnlyApi(url)],
+    ['默认项目日志只读 API', () => checkReadOnlyApi(url)],
   ];
 
   let passed = 0;
