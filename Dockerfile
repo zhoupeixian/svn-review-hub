@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS build
+FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 RUN npm run build:server
 
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime
+FROM node:26-bookworm-slim@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae AS runtime
 LABEL org.opencontainers.image.source="https://github.com/zhoupeixian/zherp-svn-review-portal" \
       org.opencontainers.image.licenses="MIT"
 WORKDIR /app
