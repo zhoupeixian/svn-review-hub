@@ -23,7 +23,7 @@ describe('审查日志路径脱敏', () => {
     );
     expect(sanitized).not.toContain('E:\\workspace\\haihua');
     expect(sanitized).not.toContain('E:/workspace/haihua');
-    const href = sanitized.match(/\]\((review-file:[^)]+)\)/)?.[1];
+    const href = sanitized.match(/review-file:[^>)]+/)?.[0];
     expect(href).toBeTruthy();
     expect(reviewFilePathFromUrl(href!)).toBe(
       'src/order/Order Service.java:82',
