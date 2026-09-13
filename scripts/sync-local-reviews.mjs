@@ -130,7 +130,9 @@ async function uploadReview(
   if (serviceToken) {
     headers['OAI-Sites-Authorization'] = 'Bearer ' + serviceToken;
   }
-  const response = await fetch(baseUrl.replace(/\/+$/, '') + '/api/reviews', {
+  let baseUrlEnd = baseUrl.length;
+  while (baseUrlEnd > 0 && baseUrl[baseUrlEnd - 1] === '/') baseUrlEnd -= 1;
+  const response = await fetch(baseUrl.slice(0, baseUrlEnd) + '/api/reviews', {
     method: 'POST',
     headers,
     body: JSON.stringify({
