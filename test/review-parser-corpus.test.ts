@@ -27,6 +27,32 @@ describe('真实审查日志格式兼容', () => {
     expect(parsed).toMatchObject({ p1Count: 1, p2Count: 1, p3Count: 0 });
   });
 
+  it('兼容行内问题标题并忽略近似标题', () => {
+    const parsed = parseReviewMarkdown([
+      '# ZHERP 当日 SVN 提交审查日志',
+      '日期：2026-09-13',
+      '### P1 不是合法问题标题',
+      '### p2 ： r53839 行内标题',
+      '相关 revision：53839',
+      '',
+      '### P3: ASCII 冒号标题',
+      '相关 revision：53840',
+    ].join('\n'));
+
+    expect(parsed.issues).toEqual([
+      expect.objectContaining({
+        severity: 'P2',
+        title: 'r53839 行内标题',
+        relatedRevisions: '53839',
+      }),
+      expect.objectContaining({
+        severity: 'P3',
+        title: 'ASCII 冒号标题',
+        relatedRevisions: '53840',
+      }),
+    ]);
+  });
+
   it('不把只有摘要数量、没有结构化问题章节的文案当成问题', () => {
     const parsed = parseReviewMarkdown([
       '# ZHERP 当日 SVN 提交审查日志',
