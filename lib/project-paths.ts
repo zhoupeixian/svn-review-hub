@@ -25,7 +25,10 @@ export function relativizeProjectPaths(value: string): string {
 }
 
 export function sanitizeStoredReviewText(value: string, projectSlug: string): string {
-  return projectSlug === 'zherp' ? relativizeProjectPaths(value) : value;
+  const sanitized = projectSlug === 'zherp' ? relativizeProjectPaths(value) : value;
+  return sanitized.replace(/review-file:[^\s)>]+/g, (url) =>
+    reviewFilePathFromUrl(url) ?? url,
+  );
 }
 
 export function sanitizeStoredReviewMarkdown(value: string, projectSlug: string): string {

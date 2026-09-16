@@ -24,6 +24,21 @@ describe('项目路径展示', () => {
     expect(hint.getAttribute('data-local-path')).toBe('true');
   });
 
+  it('结构化问题详情保留纯文本排版并显示可读的本地路径', () => {
+    const relativePath =
+      'erp-sinochem-biz/src/main/java-sinochem-toolconfig/com/bokesoft/erpsinochem/tool/co/TCO_GenCostCompStructPrice.java#L83';
+    const detail =
+      '- 相关文件： [TCO_GenCostCompStructPrice.java](<review-file:' +
+      encodeURIComponent(relativePath) +
+      '>)\n- 影响： 保留原有说明';
+
+    expect(sanitizeStoredReviewText(detail, 'sinochem')).toBe(
+      '- 相关文件： [TCO_GenCostCompStructPrice.java](<' +
+        relativePath +
+        '>)\n- 影响： 保留原有说明',
+    );
+  });
+
   it('只为历史 zherp 数据保留旧绝对路径展示兼容', () => {
     const historical = '相关文件：D:\\SVN\\ZHERP\\solutions\\erp\\Form.xml:633';
     expect(relativizeProjectPaths(historical)).toBe(
