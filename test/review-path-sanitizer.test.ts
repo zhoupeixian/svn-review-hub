@@ -52,6 +52,28 @@ describe('审查日志路径脱敏', () => {
     ).toBe('SVN 工作副本：.');
   });
 
+  it('只在路径边界匹配项目根目录', () => {
+    const projectRoot = '/workspace/project';
+    const url = 'https://example.com/workspace/project';
+
+    expect(sanitizeReviewMarkdown(`参考：${url}`, projectRoot)).toBe(
+      `参考：${url}`,
+    );
+    expect(() =>
+      sanitizeReviewMarkdown('/home/workspace/project/file.txt', projectRoot),
+    ).toThrow('未能转换的绝对本地路径');
+  });
+
+  it('将 Markdown 中的项目根目录链接保留为本地引用', () => {
+    const projectRoot = 'D:\\SVN\\ZHERP';
+    expect(
+      sanitizeReviewMarkdown(
+        `[工作副本](${projectRoot})`,
+        projectRoot,
+      ),
+    ).toBe('[工作副本](review-file:.)');
+  });
+
   it('支持 Unix 项目根目录且不要求日志位于项目目录', () => {
     const sanitized = sanitizeReviewMarkdown(
       '文件：/srv/work trees/finance/src/report.ts:120',
