@@ -73,6 +73,20 @@ describe('审查日志路径脱敏', () => {
   it('只在路径边界匹配项目根目录', () => {
     const projectRoot = '/workspace/project';
     const url = 'https://example.com/workspace/project';
+    const minusUrl = 'https://example.com/foo-/workspace/project/file.ts';
+    const plusUrl = 'https://example.com/foo+/workspace/project/file.ts';
+    expect(sanitizeReviewMarkdown(`参考：${minusUrl}`, projectRoot)).toBe(
+      `参考：${minusUrl}`,
+    );
+    expect(sanitizeReviewMarkdown(`参考：${plusUrl}`, projectRoot)).toBe(
+      `参考：${plusUrl}`,
+    );
+    expect(
+      sanitizeReviewMarkdown(
+        `变更内容：\n+/workspace/project/file.ts`,
+        projectRoot,
+      ),
+    ).toBe('变更内容：\n+file.ts');
 
     expect(sanitizeReviewMarkdown(`参考：${url}`, projectRoot)).toBe(
       `参考：${url}`,
