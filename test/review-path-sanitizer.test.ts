@@ -30,6 +30,28 @@ describe('审查日志路径脱敏', () => {
     );
   });
 
+  it('将日志中恰好等于项目根目录的路径转换为点路径', () => {
+    const projectRoot = 'D:\\SVN\\ZHERP';
+    expect(
+      sanitizeReviewMarkdown(
+        `SVN 工作副本：${projectRoot}`,
+        projectRoot,
+      ),
+    ).toBe('SVN 工作副本：.');
+    expect(
+      sanitizeReviewMarkdown(
+        '目录：file:///D:/SVN/ZHERP',
+        projectRoot,
+      ),
+    ).toBe('目录：.');
+    expect(
+      sanitizeReviewMarkdown(
+        `SVN 工作副本：${projectRoot}\\`,
+        projectRoot,
+      ),
+    ).toBe('SVN 工作副本：.');
+  });
+
   it('支持 Unix 项目根目录且不要求日志位于项目目录', () => {
     const sanitized = sanitizeReviewMarkdown(
       '文件：/srv/work trees/finance/src/report.ts:120',
@@ -44,7 +66,7 @@ describe('审查日志路径脱敏', () => {
         '文件：D:\\other\\secret.txt',
         'D:\\SVN\\ZHERP',
       ),
-    ).toThrow('项目根目录之外的绝对本地路径');
+    ).toThrow('未能转换的绝对本地路径');
   });
 
   it('识别服务端不得持久化的绝对本地路径', () => {
