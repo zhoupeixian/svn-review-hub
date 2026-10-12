@@ -52,9 +52,41 @@ describe('审查日志路径脱敏', () => {
     ).toBe('SVN 工作副本：.');
   });
 
+  it('处理紧邻差异标记的绝对本地路径', () => {
+    const projectRoot = 'D:\\SVN\\ZHERP';
+    const changedFile = `${projectRoot}\\src\\review.ts`;
+
+    expect(sanitizeReviewMarkdown(`+${changedFile}`, projectRoot)).toBe(
+      '+src\\review.ts',
+    );
+    expect(sanitizeReviewMarkdown(`-${changedFile}`, projectRoot)).toBe(
+      '-src\\review.ts',
+    );
+    expect(() =>
+      sanitizeReviewMarkdown('-E:\\other\\secret.txt', projectRoot),
+    ).toThrow('未能转换的绝对本地路径');
+    expect(() =>
+      sanitizeReviewMarkdown('+/home/dev/secret.txt', projectRoot),
+    ).toThrow('未能转换的绝对本地路径');
+  });
+
   it('只在路径边界匹配项目根目录', () => {
     const projectRoot = '/workspace/project';
     const url = 'https://example.com/workspace/project';
+    const minusUrl = 'https://example.com/foo-/workspace/project/file.ts';
+    const plusUrl = 'https://example.com/foo+/workspace/project/file.ts';
+    expect(sanitizeReviewMarkdown(`参考：${minusUrl}`, projectRoot)).toBe(
+      `参考：${minusUrl}`,
+    );
+    expect(sanitizeReviewMarkdown(`参考：${plusUrl}`, projectRoot)).toBe(
+      `参考：${plusUrl}`,
+    );
+    expect(
+      sanitizeReviewMarkdown(
+        `变更内容：\n+/workspace/project/file.ts`,
+        projectRoot,
+      ),
+    ).toBe('变更内容：\n+file.ts');
 
     expect(sanitizeReviewMarkdown(`参考：${url}`, projectRoot)).toBe(
       `参考：${url}`,
